@@ -15,7 +15,7 @@ type updateStruct struct {
 	add int
 }
 
-func TestTreap(t *testing.T) {
+func TestLazySegmentTree(t *testing.T) {
 	st := segment_tree.NewLazyST(
 		func(i int) valueStruct {
 			return valueStruct{

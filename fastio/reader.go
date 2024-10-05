@@ -69,6 +69,34 @@ func (r *Reader) NextInt() int {
 	return n
 }
 
+func (r *Reader) NextUint() uint {
+	n := uint(0)
+	for {
+		c, ok := r.peek()
+		if !ok {
+			return 0
+		}
+		r.seek()
+		if '0' <= c && c <= '9' {
+			n = uint(c - '0')
+			break
+		}
+	}
+
+	for {
+		c, ok := r.peek()
+		if !ok {
+			break
+		}
+		r.seek()
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + uint(c-'0')
+	}
+	return n
+}
+
 func (r *Reader) NextInt2() (int, int) {
 	return r.NextInt(), r.NextInt()
 }

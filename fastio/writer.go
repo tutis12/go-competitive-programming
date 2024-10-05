@@ -72,6 +72,27 @@ func (w *Writer) PutInt(value int, c byte) {
 	w.putBytes(w.intBuffer[i+1:])
 }
 
+func (w *Writer) PutUint(n uint, c byte) {
+	pos := true
+	i := maxIntSize - 1
+	w.intBuffer[i] = c
+	i--
+	if n == 0 {
+		w.intBuffer[i] = '0'
+		i--
+	}
+	for n != 0 {
+		w.intBuffer[i] = '0' + byte(n%10)
+		n /= 10
+		i--
+	}
+	if !pos {
+		w.intBuffer[i] = '-'
+		i--
+	}
+	w.putBytes(w.intBuffer[i+1:])
+}
+
 func (w *Writer) PutInts(n []int, sep byte) {
 	if len(n) == 0 {
 		w.PutString("\n")
