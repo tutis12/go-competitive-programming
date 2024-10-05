@@ -12,10 +12,10 @@ func Recover() {
 	if err == nil {
 		return
 	}
-	buf := make([]byte, 1000)
+	buf := make([]byte, 10000)
 	n := runtime.Stack(buf, false)
 	buf = buf[:n]
-	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:%s", err, string(buf))
+	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
 	os.Exit(13)
 }
 

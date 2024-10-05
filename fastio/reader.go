@@ -148,6 +148,14 @@ func (r *Reader) NextString() string {
 	return string(res)
 }
 
+func (r *Reader) NextStrings(n int) []string {
+	strings := make([]string, n)
+	for i := range n {
+		strings[i] = r.NextString()
+	}
+	return strings
+}
+
 func (r *Reader) NextLine() string {
 	res := []byte{}
 	afterWhite := false
