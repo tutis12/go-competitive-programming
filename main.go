@@ -51,7 +51,14 @@ func main() {
 			outputs[i] = solve(input)
 			wgs[i].Done()
 			doneCounter.Add(1)
-			fmt.Fprintf(os.Stderr, "test %d (%d/%d) took %s\n", i+1, doneCounter.Load(), tests, time.Since(start))
+			fmt.Fprintf(
+				os.Stderr,
+				"test %d (%d/%d) took %s\n",
+				i+1,
+				doneCounter.Load(),
+				tests,
+				time.Since(start),
+			)
 		}()
 	}
 	for i := range tests {
