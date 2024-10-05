@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"main/fastio"
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 var stdout = &fastio.Writer{
@@ -94,13 +97,18 @@ func main() {
 	tests := stdin.NextUint()
 	outputs := make([]output, tests)
 	wgs := make([]sync.WaitGroup, tests)
+	doneCounter := atomic.Uint64{}
+	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
 	for i := range tests {
 		wgs[i].Add(1)
 		input := input{}
 		input.Read()
 		go func() {
-			outputs[i] = solve(i, input)
+			start := time.Now()
+			outputs[i] = solve(i+1, input)
 			wgs[i].Done()
+			doneCounter.Add(1)
+			fmt.Fprintf(os.Stderr, "test %d (%d/%d) took %s\n", i+1, doneCounter.Load(), tests, time.Since(start))
 		}()
 	}
 	for i := range tests {
