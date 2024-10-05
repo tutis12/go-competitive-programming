@@ -32,7 +32,7 @@ func init() {
 	stdout.File = outputFile
 }
 
-// func init() {
-// 	stdin.File = os.Stdin
-// 	stdout.File = os.Stdout
-// }
+func init() {
+	stdin.File = os.Stdin
+	stdout.File = os.Stdout
+}

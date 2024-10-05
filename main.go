@@ -47,116 +47,144 @@ func main() {
 }
 
 type input struct {
-	n int
-	s []string
+	s string
+	k int
 }
 
 func (i *input) Read() {
-	i.n = stdin.NextInt()
-	i.s = stdin.NextStrings(i.n)
+	i.s = stdin.NextString()
+	i.k = stdin.NextInt()
 }
 
 type output struct {
+	s     string
 	value int
 }
 
 func (o *output) Print() {
+	stdout.PutString(o.s)
+	stdout.PutString(" ")
 	stdout.PutInt(o.value, '\n')
 }
 
 const mod = 998244353
 
 func solve(input *input) output {
-	return output{
-		value: (1 + solveMask((1<<input.n)-1, 0, input.s, &dp{
-			dp: make([][]int, 1<<input.n),
-		})) % mod,
-	}
-}
-
-type dp struct {
-	dp [][]int
-}
-
-func solveMask(mask uint, prefix int, strings []string, dp *dp) int {
-	if mask == 0 {
-		return 0
-	}
-	dp1 := dp.dp[mask]
-	if prefix < len(dp1) && dp1[prefix] != -1 {
-		return dp1[prefix]
-	}
-	allQ := true
-	for i := 0; i < 25; i++ {
-		if (mask & (1 << i)) == 0 {
-			continue
-		}
-		if len(strings[i]) <= prefix || strings[i][prefix] != '?' {
-			allQ = false
+	s1 := make([]uint8, len(input.s))
+	for i, c := range input.s {
+		if c == '?' {
+			s1[i] = 1
+		} else {
+			s1[i] = uint8(c - '0')
 		}
 	}
-	if allQ {
-		answer := (26 + 26*solveMask(mask, prefix+1, strings, dp)) % mod
-		dp1 := dp.dp[mask]
-		for prefix >= len(dp1) {
-			dp1 = append(dp1, -1)
+	dp1 := make([]bool, len(s1)+1)
+	dp2 := make([]bool, len(s1)+1)
+	dp1[0] = true
+	dp2[len(s1)] = true
+	for i := 1; i <= len(s1); i++ {
+		if s1[i-1] >= 1 {
+			dp1[i] = dp1[i] || dp1[i-1]
 		}
-		dp1[prefix] = answer
-		dp.dp[mask] = dp1
-		return answer
+		if i >= 2 && s1[i-2] >= 1 && s1[i-2]*10+s1[i-1] <= 26 {
+			dp1[i] = dp1[i] || dp1[i-2]
+		}
 	}
-	answer := 0
-	for c := byte('A'); c <= byte('Z'); c++ {
-		matchMask := uint(0)
-		for i := 0; i < 25; i++ {
-			if (mask & (1 << i)) == 0 {
+	for i := len(s1) - 1; i >= 0; i-- {
+		if s1[i] >= 1 {
+			dp2[i] = dp2[i] || dp2[i+1]
+		}
+		if i <= len(s1)-2 && s1[i] >= 1 && s1[i]*10+s1[i+1] <= 26 {
+			dp2[i] = dp2[i] || dp2[i+2]
+		}
+	}
+	good := make([][2]bool, len(s1))
+	for i := 0; i < len(s1); i++ {
+		if s1[i] >= 1 && s1[i] <= 9 && dp1[i] && dp2[i+1] {
+			good[i][0] = true
+		}
+		if i <= len(s1)-2 && s1[i] >= 1 && s1[i]*10+s1[i+1] <= 26 && dp1[i] && dp2[i+2] {
+			good[i][1] = true
+		}
+	}
+	s := input.s
+	dp3 := make([][26]int, len(s1))
+	for i := len(s) - 1; i >= 0; i-- {
+		for c := range 10 {
+			if input.s[i] != '0'+byte(c) && input.s[i] != '?' {
 				continue
 			}
-			if len(strings[i]) > prefix && (strings[i][prefix] == c || strings[i][prefix] == '?') {
-				matchMask += 1 << i
+			if good[i][0] {
+				if c == 0 {
+					continue
+				}
+			}
+			if i == len(s)-1 {
+				dp3[i][c] = 1
+				continue
+			}
+			ways := 0
+			for c1 := range 10 {
+				if good[i][1] {
+					if c == 0 || c*10+c1 > 26 {
+						continue
+					}
+				}
+				ways += dp3[i+1][c1]
+			}
+			ways = min(ways, input.k)
+			dp3[i][c] = ways
+		}
+	}
+	sBytes := []byte(s)
+	for i, c := range s {
+		if c == '?' {
+			for c := 25; c >= 0; c-- {
+				if input.k > dp3[i][c] {
+					input.k -= dp3[i][c]
+					continue
+				}
+				sBytes[i] = '0' + byte(c)
+				break
 			}
 		}
-		if matchMask == 0 {
-			continue
+	}
+	dp4 := make([]int, len(s1)+1)
+	dp4[len(s1)] = 1
+	for i := len(s1) - 1; i >= 0; i-- {
+		if good[i][0] {
+			dp4[i] += dp4[i+1]
 		}
-		answer++
-		answer += solveMask(matchMask, prefix+1, strings, dp)
-		answer %= mod
+		if good[i][1] {
+			dp4[i] += dp4[i+2]
+		}
+		if dp4[i] >= mod {
+			dp4[i] -= mod
+		}
 	}
-	dp1 = dp.dp[mask]
-	for prefix >= len(dp1) {
-		dp1 = append(dp1, -1)
+	return output{
+		s:     string(sBytes),
+		value: dp4[0],
 	}
-	dp1[prefix] = answer
-	dp.dp[mask] = dp1
-	return answer
 }
 
 /*input
-5
-2
-META
-MATE
-2
-?B
-AC
-1
-??
-3
-XXY
-X?
-?X
-2
-??M?E?T?A??
-?M?E?T?A?
+6
+??2 3
+135201 1
+?35 2
+1?0 2
+1122 1
+3???????????????????3 1337
 
 */
 
 /*output
-Case #1: 8
-Case #2: 54
-Case #3: 703
-Case #4: 79
-Case #5: 392316013
+Case #1: 122 3
+Case #2: 135201 2
+Case #3: 135 2
+Case #4: 110 1
+Case #5: 1122 5
+Case #6: 322222222121221112223 10946
 
 */
