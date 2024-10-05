@@ -70,17 +70,6 @@ func main() {
 	}
 }
 
-func printSeconds() {
-	start := time.Now()
-	ticker := time.NewTicker(time.Second * 5)
-	go func() {
-		defer Recover()
-		for range ticker.C {
-			fmt.Fprintf(os.Stderr, "%s passed\n", time.Since(start))
-		}
-	}()
-}
-
 func solve(input input) output {
 	slices.Sort(input.S)
 	return output{
