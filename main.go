@@ -50,12 +50,12 @@ func main() {
 			start := time.Now()
 			outputs[i] = solve(input)
 			wgs[i].Done()
-			doneCounter.Add(1)
+			doneCnt := doneCounter.Add(1)
 			fmt.Fprintf(
 				os.Stderr,
 				"test %d (%d/%d) took %s\n",
 				i+1,
-				doneCounter.Load(),
+				doneCnt,
 				tests,
 				time.Since(start),
 			)

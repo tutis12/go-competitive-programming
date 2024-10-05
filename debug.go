@@ -17,7 +17,7 @@ func Recover() {
 
 func printSeconds() {
 	start := time.Now()
-	ticker := time.NewTicker(time.Second * 5)
+	ticker := time.NewTicker(time.Second * 10)
 	go func() {
 		defer Recover()
 		for range ticker.C {
