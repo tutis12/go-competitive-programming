@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"main/fastio"
 	"os"
 	"slices"
 	"sync"
@@ -10,28 +9,76 @@ import (
 	"time"
 )
 
-var stdout = &fastio.Writer{
-	File: os.Stdout,
+type input struct {
+	N int
+	K int
+	S []int
 }
 
-var stdin = &fastio.Reader{
-	File: os.Stdin,
+func (o *input) Read() {
+	o.N, o.K = stdin.NextInt2()
+	o.S = stdin.NextInts(o.N)
 }
 
-func init() {
-	inputFile, err := os.Open("io/walk_the_line_input.txt")
-	if err != nil {
-		panic(err.Error())
+type output struct {
+	YES bool
+}
+
+func (o *output) Print() {
+	if o.YES {
+		stdout.PutString("YES\n")
+	} else {
+		stdout.PutString("NO\n")
 	}
-	stdin.File = inputFile
 }
 
-func init() {
-	outputFile, err := os.Create("io/output.txt")
-	if err != nil {
-		panic(err.Error())
+func main() {
+	defer stdout.WriteAll()
+	defer Recover()
+	printSeconds()
+	tests := stdin.NextUint()
+	outputs := make([]output, tests)
+	wgs := make([]sync.WaitGroup, tests)
+	doneCounter := atomic.Uint64{}
+	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
+	for i := range tests {
+		wgs[i].Add(1)
+		input := input{}
+		input.Read()
+		go func() {
+			defer Recover()
+			start := time.Now()
+			outputs[i] = solve(input)
+			wgs[i].Done()
+			doneCounter.Add(1)
+			fmt.Fprintf(os.Stderr, "test %d (%d/%d) took %s\n", i+1, doneCounter.Load(), tests, time.Since(start))
+		}()
 	}
-	stdout.File = outputFile
+	for i := range tests {
+		wgs[i].Wait()
+		stdout.PutString("Case #")
+		stdout.PutUint(i+1, ':')
+		stdout.PutString(" ")
+		outputs[i].Print()
+	}
+}
+
+func printSeconds() {
+	start := time.Now()
+	ticker := time.NewTicker(time.Second * 5)
+	go func() {
+		defer Recover()
+		for range ticker.C {
+			fmt.Fprintf(os.Stderr, "%s passed\n", time.Since(start))
+		}
+	}()
+}
+
+func solve(input input) output {
+	slices.Sort(input.S)
+	return output{
+		YES: input.S[0]*max(1, input.N*2-3) <= input.K,
+	}
 }
 
 /*input
@@ -67,62 +114,3 @@ Case #4: NO
 Case #5: NO
 Case #6: YES
 */
-
-type input struct {
-	N int
-	K int
-	S []int
-}
-
-type output struct {
-	YES bool
-}
-
-func (o *input) Read() {
-	o.N, o.K = stdin.NextInt2()
-	o.S = stdin.NextInts(o.N)
-}
-
-func (o *output) Print() {
-	if o.YES {
-		stdout.PutString("YES\n")
-	} else {
-		stdout.PutString("NO\n")
-	}
-}
-
-func main() {
-	defer stdout.WriteAll()
-
-	tests := stdin.NextUint()
-	outputs := make([]output, tests)
-	wgs := make([]sync.WaitGroup, tests)
-	doneCounter := atomic.Uint64{}
-	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
-	for i := range tests {
-		wgs[i].Add(1)
-		input := input{}
-		input.Read()
-		go func() {
-			start := time.Now()
-			outputs[i] = solve(i+1, input)
-			wgs[i].Done()
-			doneCounter.Add(1)
-			fmt.Fprintf(os.Stderr, "test %d (%d/%d) took %s\n", i+1, doneCounter.Load(), tests, time.Since(start))
-		}()
-	}
-	for i := range tests {
-		wgs[i].Wait()
-		stdout.PutString("Case #")
-		stdout.PutUint(i+1, ':')
-		stdout.PutString(" ")
-		outputs[i].Print()
-	}
-}
-
-func solve(test uint, input input) output {
-	slices.Sort(input.S)
-	return output{
-		YES: input.S[0]*max(1, input.N*2-3) <= input.K,
-	}
-}
