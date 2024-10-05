@@ -53,10 +53,7 @@ type input struct {
 
 func (i *input) Read() {
 	i.n = stdin.NextInt()
-	i.s = make([]string, i.n)
-	for index := range i.n {
-		i.s[index] = stdin.NextString()
-	}
+	i.s = stdin.NextStrings(i.n)
 }
 
 type output struct {
