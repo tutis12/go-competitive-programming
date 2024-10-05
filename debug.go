@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 )
 
@@ -11,7 +12,10 @@ func Recover() {
 	if err == nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "panic: %v", err)
+	buf := make([]byte, 1000)
+	n := runtime.Stack(buf, false)
+	buf = buf[:n]
+	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:%s", err, string(buf))
 	os.Exit(13)
 }
 

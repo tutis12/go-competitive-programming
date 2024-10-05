@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-const inputFile = "substantial_losses_input.txt"
+const inputFile = "wildcard_submissions_input.txt"
 const outputFile = "output.txt"
 
 var stdout = &fastio.Writer{

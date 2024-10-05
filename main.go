@@ -24,7 +24,7 @@ func main() {
 		go func() {
 			defer Recover()
 			start := time.Now()
-			outputs[i] = solve(input)
+			outputs[i] = solve(&input)
 			wgs[i].Done()
 			doneCnt := doneCounter.Add(1)
 			fmt.Fprintf(
@@ -47,13 +47,16 @@ func main() {
 }
 
 type input struct {
-	s string
-	k int
+	n int
+	s []string
 }
 
 func (i *input) Read() {
-	i.s = stdin.NextString()
-	i.k = stdin.NextInt()
+	i.n = stdin.NextInt()
+	i.s = make([]string, i.n)
+	for index := range i.n {
+		i.s[index] = stdin.NextString()
+	}
 }
 
 type output struct {
@@ -66,80 +69,97 @@ func (o *output) Print() {
 
 const mod = 998244353
 
-type dp struct {
-	nInt   int
-	nFloat float64
-	ways   int
-
-	nInt1   int
-	nFloat1 float64
-	ways1   int
-}
-
-func make1() dp {
-	return dp{1, 1, 1, 1, 1, 1}
-}
-
-func solve(input input) output {
-	s := input.s
-	dp := make([][10][2]dp, len(s)+2)
-	can := func(i int, c int) bool {
-		if i >= len(s) {
-			return c == 0
-		}
-		if s[i] == '?' {
-			return true
-		}
-		return int(s[i]-'0') == c
+func solve(input *input) output {
+	return output{
+		value: (1 + solveMask((1<<input.n)-1, 0, input.s, &dp{
+			dp: make([][]int, 1<<input.n),
+		})) % mod,
 	}
-	dp[len(s)][0][0] = make1()
-	dp[len(s)+1][0][0] = make1()
-	for i := len(s) - 1; i >= 0; i-- {
-		for ci := range 10 {
-			if !can(i, ci) {
+}
+
+type dp struct {
+	dp [][]int
+}
+
+func solveMask(mask uint, prefix int, strings []string, dp *dp) int {
+	if mask == 0 {
+		return 0
+	}
+	dp1 := dp.dp[mask]
+	if prefix < len(dp1) && dp1[prefix] != -1 {
+		return dp1[prefix]
+	}
+	allQ := true
+	for i := 0; i < 25; i++ {
+		if (mask & (1 << i)) == 0 {
+			continue
+		}
+		if len(strings[i]) <= prefix || strings[i][prefix] != '?' {
+			allQ = false
+		}
+	}
+	if allQ {
+		answer := (26 + 26*solveMask(mask, prefix+1, strings, dp)) % mod
+		dp1 := dp.dp[mask]
+		for prefix >= len(dp1) {
+			dp1 = append(dp1, -1)
+		}
+		dp1[prefix] = answer
+		dp.dp[mask] = dp1
+		return answer
+	}
+	answer := 0
+	for c := byte('A'); c <= byte('Z'); c++ {
+		matchMask := uint(0)
+		for i := 0; i < 25; i++ {
+			if (mask & (1 << i)) == 0 {
 				continue
 			}
-			for cj := range 10 {
-				if !can(i+1, cj) {
-					continue
-				}
-
-				for ck := range 10 {
-					var nInt int
-					var nFloat float64
-					nWays := dp[i+1][cj][ck].ways
-					if ci >= 1 {
-						nInt += dp[i+1][cj][ck].nInt
-						nFloat += dp[i+1][cj][ck].nFloat
-					}
-					if ci*10+cj >= 1 && ci*10+cj <= 26 {
-
-					}
-				}
+			if len(strings[i]) > prefix && (strings[i][prefix] == c || strings[i][prefix] == '?') {
+				matchMask += 1 << i
 			}
 		}
+		if matchMask == 0 {
+			continue
+		}
+		answer++
+		answer += solveMask(matchMask, prefix+1, strings, dp)
+		answer %= mod
 	}
+	dp1 = dp.dp[mask]
+	for prefix >= len(dp1) {
+		dp1 = append(dp1, -1)
+	}
+	dp1[prefix] = answer
+	dp.dp[mask] = dp1
+	return answer
 }
 
-const epsilon = 1e-7
-
 /*input
-6
-??2 3
-135201 1
-?35 2
-1?0 2
-1122 1
-3???????????????????3 1337
+5
+2
+META
+MATE
+2
+?B
+AC
+1
+??
+3
+XXY
+X?
+?X
+2
+??M?E?T?A??
+?M?E?T?A?
 
 */
 
 /*output
-Case #1: 122 3
-Case #2: 135201 2
-Case #3: 135 2
-Case #4: 110 1
-Case #5: 1122 5
-Case #6: 322222222121221112223 10946
+Case #1: 8
+Case #2: 54
+Case #3: 703
+Case #4: 79
+Case #5: 392316013
 
 */
