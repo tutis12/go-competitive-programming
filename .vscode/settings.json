@@ -1,0 +1,13 @@
+{
+    "buildAndRun": {
+        "go": {
+            "build": "go build",
+            "inputBegin": "/*input\n",
+            "inputEnd": "*/",
+            "outputBegin": "/*output\n",
+            "outputEnd": "*/",
+            "run": "\"./${file_base_name}\"",
+            "ext": "go",
+        },
+    }
+}
