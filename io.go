@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-const inputFile = "walk_the_line_input.txt"
+const inputFile = "substantial_losses_input.txt"
 const outputFile = "output.txt"
 
 var stdout = &fastio.Writer{
@@ -32,7 +32,7 @@ func init() {
 	stdout.File = outputFile
 }
 
-func init() {
-	stdin.File = os.Stdin
-	stdout.File = os.Stdout
-}
+// func init() {
+// 	stdin.File = os.Stdin
+// 	stdout.File = os.Stdout
+// }
