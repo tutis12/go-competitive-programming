@@ -22,4 +22,6 @@ modulos
 
 fft
 
+run tests on github
+
 ...
