@@ -70,6 +70,7 @@ func (o *output) Print() {
 const mod = 998244353
 
 func solve(input *input) output {
+
 	s1 := make([]uint8, len(input.s))
 	for i, c := range input.s {
 		if c == '?' {
