@@ -1,6 +1,6 @@
 # Golang-Competitive-Programming
 
-DONE:
+# DONE:
 
 fast buffered io
 
@@ -12,7 +12,7 @@ hackercup template
 
 
 
-TODO:
+# TODO:
 
 exporter to a single file for codeforces.
 
