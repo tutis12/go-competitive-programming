@@ -1,5 +1,9 @@
 # Golang-Competitive-Programming
 
+# How to use
+
+install https://marketplace.visualstudio.com/items?itemName=glelesius.build-and-run
+
 # DONE:
 
 fast buffered io
