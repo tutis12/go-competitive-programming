@@ -20,6 +20,8 @@ hackercup template
 
 exporter to a single file for codeforces.
 
+string algorithms
+
 geometry
 
 modular arithmetic
