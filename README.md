@@ -22,7 +22,7 @@ exporter to a single file for codeforces.
 
 geometry
 
-modulos
+modular arithmetic
 
 fft
 
