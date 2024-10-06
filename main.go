@@ -7,12 +7,9 @@ import (
 	"os"
 )
 
-const inputFile = "wildcard_submissions_input.txt"
-const outputFile = "output.txt"
-
-const fromFile = false
-
 func main() {
+	const fromFile = false
+
 	var stdout = &fastio.Writer{
 		File: os.Stdout,
 	}
@@ -21,12 +18,12 @@ func main() {
 		File: os.Stdin,
 	}
 	if fromFile {
-		inputFile, err := os.Open("io/" + inputFile)
+		inputFile, err := os.Open("io/wildcard_submissions_input.txt")
 		if err != nil {
 			panic(err.Error())
 		}
 		stdin.File = inputFile
-		outputFile, err := os.Create("io/" + outputFile)
+		outputFile, err := os.Create("io/output.txt")
 		if err != nil {
 			panic(err.Error())
 		}
