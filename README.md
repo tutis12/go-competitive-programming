@@ -26,8 +26,18 @@ geometry
 
 modular arithmetic
 
+binary indexed tree
+
+disjoint set union
+
+graph algos
+
 fft
 
 run tests on github
+
+binary&golden ratio search
+
+try improving hash set&sort
 
 ...
