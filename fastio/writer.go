@@ -21,7 +21,7 @@ func (w *Writer) WriteAll() {
 	w.used = 0
 }
 
-func (w *Writer) putBytes(c []byte) {
+func (w *Writer) bytes(c []byte) {
 	copy(w.buffer[w.used:], c)
 	w.used += len(c)
 	if w.used >= buffSize-maxIntSize {
@@ -29,7 +29,7 @@ func (w *Writer) putBytes(c []byte) {
 	}
 }
 
-func (w *Writer) PutString(s string) {
+func (w *Writer) String(s string) {
 	fr := 0
 	to := len(s)
 	for fr < to {
@@ -44,7 +44,7 @@ func (w *Writer) PutString(s string) {
 	}
 }
 
-func (w *Writer) PutInt(value int, c byte) {
+func (w *Writer) Int(value int, c byte) {
 	pos := true
 	var n uint
 	if value < 0 {
@@ -69,10 +69,10 @@ func (w *Writer) PutInt(value int, c byte) {
 		w.intBuffer[i] = '-'
 		i--
 	}
-	w.putBytes(w.intBuffer[i+1:])
+	w.bytes(w.intBuffer[i+1:])
 }
 
-func (w *Writer) PutUint(n uint, c byte) {
+func (w *Writer) Uint(n uint, c byte) {
 	pos := true
 	i := maxIntSize - 1
 	w.intBuffer[i] = c
@@ -90,18 +90,18 @@ func (w *Writer) PutUint(n uint, c byte) {
 		w.intBuffer[i] = '-'
 		i--
 	}
-	w.putBytes(w.intBuffer[i+1:])
+	w.bytes(w.intBuffer[i+1:])
 }
 
-func (w *Writer) PutInts(n []int, sep byte) {
+func (w *Writer) Ints(n []int, sep byte) {
 	if len(n) == 0 {
-		w.PutString("\n")
+		w.String("\n")
 	}
 	for i, v := range n {
 		if i != len(n)-1 {
-			w.PutInt(v, sep)
+			w.Int(v, sep)
 		} else {
-			w.PutInt(v, '\n')
+			w.Int(v, '\n')
 		}
 	}
 }

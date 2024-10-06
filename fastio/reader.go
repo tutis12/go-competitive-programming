@@ -33,7 +33,7 @@ func (r *Reader) seek() {
 	r.from++
 }
 
-func (r *Reader) NextInt() int {
+func (r *Reader) Int() int {
 	pos := true
 	n := 0
 	for {
@@ -69,7 +69,7 @@ func (r *Reader) NextInt() int {
 	return n
 }
 
-func (r *Reader) NextUint() uint {
+func (r *Reader) Uint() uint {
 	n := uint(0)
 	for {
 		c, ok := r.peek()
@@ -97,14 +97,14 @@ func (r *Reader) NextUint() uint {
 	return n
 }
 
-func (r *Reader) NextInt2() (int, int) {
-	return r.NextInt(), r.NextInt()
+func (r *Reader) Int2() (int, int) {
+	return r.Int(), r.Int()
 }
 
-func (r *Reader) NextInts(n int) []int {
+func (r *Reader) Ints(n int) []int {
 	a := make([]int, n)
 	for i := range a {
-		a[i] = r.NextInt()
+		a[i] = r.Int()
 	}
 	return a
 }
@@ -117,7 +117,7 @@ func isNewLine(c byte) bool {
 	return c == '\n' || c == '\r'
 }
 
-func (r *Reader) NextString() string {
+func (r *Reader) String() string {
 	res := []byte{}
 	afterWhite := false
 	if r.from == r.to {
@@ -148,15 +148,15 @@ func (r *Reader) NextString() string {
 	return string(res)
 }
 
-func (r *Reader) NextStrings(n int) []string {
+func (r *Reader) Strings(n int) []string {
 	strings := make([]string, n)
 	for i := range n {
-		strings[i] = r.NextString()
+		strings[i] = r.String()
 	}
 	return strings
 }
 
-func (r *Reader) NextLine() string {
+func (r *Reader) Line() string {
 	res := []byte{}
 	afterWhite := false
 	if r.from == r.to {

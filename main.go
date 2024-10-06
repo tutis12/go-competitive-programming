@@ -12,7 +12,7 @@ func main() {
 	defer stdout.WriteAll()
 	defer Recover()
 	printSeconds()
-	tests := stdin.NextUint()
+	tests := stdin.Uint()
 	outputs := make([]output, tests)
 	wgs := make([]sync.WaitGroup, tests)
 	doneCounter := atomic.Uint64{}
@@ -39,9 +39,9 @@ func main() {
 	}
 	for i := range tests {
 		wgs[i].Wait()
-		stdout.PutString("Case #")
-		stdout.PutUint(i+1, ':')
-		stdout.PutString(" ")
+		stdout.String("Case #")
+		stdout.Uint(i+1, ':')
+		stdout.String(" ")
 		outputs[i].Print()
 	}
 }
@@ -52,8 +52,8 @@ type input struct {
 }
 
 func (i *input) Read() {
-	i.s = stdin.NextString()
-	i.k = stdin.NextInt()
+	i.s = stdin.String()
+	i.k = stdin.Int()
 }
 
 type output struct {
@@ -62,9 +62,9 @@ type output struct {
 }
 
 func (o *output) Print() {
-	stdout.PutString(o.s)
-	stdout.PutString(" ")
-	stdout.PutInt(o.value, '\n')
+	stdout.String(o.s)
+	stdout.String(" ")
+	stdout.Int(o.value, '\n')
 }
 
 const mod = 998244353
