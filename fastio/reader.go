@@ -1,6 +1,10 @@
 package fastio
 
-import "os"
+import (
+	"math"
+	"os"
+	"strconv"
+)
 
 type Reader struct {
 	File  *os.File
@@ -185,4 +189,13 @@ func (r *Reader) Line() string {
 		}
 	}
 	return string(res)
+}
+
+func (w *Reader) Float() float64 {
+	str := w.String()
+	flt, err := strconv.ParseFloat(str, 64)
+	if err != nil {
+		return math.NaN()
+	}
+	return flt
 }

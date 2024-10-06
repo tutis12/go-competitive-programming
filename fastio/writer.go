@@ -1,6 +1,9 @@
 package fastio
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 const buffSize = 100000
 
@@ -104,4 +107,9 @@ func (w *Writer) Ints(n []int, sep byte) {
 			w.Int(v, '\n')
 		}
 	}
+}
+
+func (w *Writer) Float(f float64) {
+	str := strconv.FormatFloat(f, 'f', -1, 64)
+	w.String(str)
 }
