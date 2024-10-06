@@ -59,11 +59,13 @@ func (c *Controller[V]) Merge(x, y *Node[V]) *Node[V] {
 		return x
 	}
 	if x.Seed > y.Seed {
+		c.Push(x)
 		xx := *x
 		xx.C[1] = c.Merge(x.C[1], y)
 		c.Pull(&xx)
 		return &xx
 	} else {
+		c.Push(y)
 		yy := *y
 		yy.C[0] = c.Merge(x, y.C[0])
 		c.Pull(&yy)

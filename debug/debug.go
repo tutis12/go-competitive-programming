@@ -1,4 +1,4 @@
-package main
+package debug
 
 import (
 	"fmt"
@@ -19,7 +19,7 @@ func Recover() {
 	os.Exit(13)
 }
 
-func printSeconds() {
+func PrintSeconds() {
 	start := time.Now()
 	ticker := time.NewTicker(time.Second * 10)
 	go func() {
