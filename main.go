@@ -36,19 +36,20 @@ Case #7: 24 2
 */
 
 func main() {
+	var stdin = &fastio.Reader{
+		File: os.Stdin,
+	}
 	var stdout = &fastio.Writer{
 		File: os.Stdout,
 	}
 
-	var stdin = &fastio.Reader{
-		File: os.Stdin,
-	}
 	if fromFile {
 		inputFile, err := os.Open("io/" + inputFile)
 		if err != nil {
 			panic(err.Error())
 		}
 		stdin.File = inputFile
+
 		outputFile, err := os.Create("io/" + outputFile)
 		if err != nil {
 			panic(err.Error())
