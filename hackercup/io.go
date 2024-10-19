@@ -6,14 +6,14 @@ type input struct {
 	n int
 }
 
-func (i *input) Read(stdin *fastio.Reader) {
-	i.n = stdin.Int()
+func (input *input) Read(stdin *fastio.Reader) {
+	input.n = stdin.Int()
 }
 
 type output struct {
 	n int
 }
 
-func (o *output) Print(stdout *fastio.Writer) {
-	stdout.Int(o.n, '\n')
+func (output *output) Print(stdout *fastio.Writer) {
+	stdout.Int(output.n, '\n')
 }
