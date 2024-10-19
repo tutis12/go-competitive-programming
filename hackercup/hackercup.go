@@ -110,7 +110,7 @@ func solve(input *input) output {
 		}
 	}
 	s := input.s
-	dp3 := make([][26]int, len(s1))
+	dp3 := make([][10]int, len(s1))
 	for i := len(s) - 1; i >= 0; i-- {
 		for c := range 10 {
 			if input.s[i] != '0'+byte(c) && input.s[i] != '?' {
@@ -141,7 +141,13 @@ func solve(input *input) output {
 	sBytes := []byte(s)
 	for i, c := range s {
 		if c == '?' {
-			for c := 25; c >= 0; c-- {
+			for c := 9; c >= 0; c-- {
+				if i != 0 && good[i-1][1] && int(sBytes[i-1]-'0')*10+c <= 9 {
+					continue
+				}
+				if i != 0 && good[i-1][1] && int(sBytes[i-1]-'0')*10+c > 26 {
+					continue
+				}
 				if input.k > dp3[i][c] {
 					input.k -= dp3[i][c]
 					continue

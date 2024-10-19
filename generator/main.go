@@ -15,7 +15,7 @@ import (
 //file ..//go
 
 func main() {
-	const fromFile = false
+	const fromFile = true
 
 	var stdout = &Writer{
 		File: os.Stdout,
@@ -25,7 +25,7 @@ func main() {
 		File: os.Stdin,
 	}
 	if fromFile {
-		inputFile, err := os.Open("io/wildcard_submissions_input.txt")
+		inputFile, err := os.Open("io/substitution_cipher_input.txt")
 		if err != nil {
 			panic(err.Error())
 		}
@@ -43,14 +43,14 @@ func main() {
 }
 
 /*input
-6
+7
 ??2 3
 135201 1
 ?35 2
 1?0 2
 1122 1
 3???????????????????3 1337
-
+2? 3
 */
 
 /*output
@@ -60,6 +60,7 @@ Case #3: 135 2
 Case #4: 110 1
 Case #5: 1122 5
 Case #6: 322222222121221112223 10946
+Case #7: 24 2
 
 */
 //package fastio
@@ -500,7 +501,7 @@ func solve(input *input) output {
 		}
 	}
 	s := input.s
-	dp3 := make([][26]int, len(s1))
+	dp3 := make([][10]int, len(s1))
 	for i := len(s) - 1; i >= 0; i-- {
 		for c := range 10 {
 			if input.s[i] != '0'+byte(c) && input.s[i] != '?' {
@@ -531,7 +532,13 @@ func solve(input *input) output {
 	sBytes := []byte(s)
 	for i, c := range s {
 		if c == '?' {
-			for c := 25; c >= 0; c-- {
+			for c := 9; c >= 0; c-- {
+				if i != 0 && good[i-1][1] && int(sBytes[i-1]-'0')*10+c <= 9 {
+					continue
+				}
+				if i != 0 && good[i-1][1] && int(sBytes[i-1]-'0')*10+c > 26 {
+					continue
+				}
 				if input.k > dp3[i][c] {
 					input.k -= dp3[i][c]
 					continue

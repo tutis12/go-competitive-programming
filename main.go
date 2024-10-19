@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	const fromFile = false
+	const fromFile = true
 
 	var stdout = &fastio.Writer{
 		File: os.Stdout,
@@ -18,7 +18,7 @@ func main() {
 		File: os.Stdin,
 	}
 	if fromFile {
-		inputFile, err := os.Open("io/wildcard_submissions_input.txt")
+		inputFile, err := os.Open("io/substitution_cipher_input.txt")
 		if err != nil {
 			panic(err.Error())
 		}
@@ -36,14 +36,14 @@ func main() {
 }
 
 /*input
-6
+7
 ??2 3
 135201 1
 ?35 2
 1?0 2
 1122 1
 3???????????????????3 1337
-
+2? 3
 */
 
 /*output
@@ -53,5 +53,6 @@ Case #3: 135 2
 Case #4: 110 1
 Case #5: 1122 5
 Case #6: 322222222121221112223 10946
+Case #7: 24 2
 
 */
