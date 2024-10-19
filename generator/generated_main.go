@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -14,33 +13,11 @@ import (
 //package main
 //file ..//go
 
-func main() {
-	const fromFile = true
-
-	var stdout = &Writer{
-		File: os.Stdout,
-	}
-
-	var stdin = &Reader{
-		File: os.Stdin,
-	}
-	if fromFile {
-		inputFile, err := os.Open("io/substitution_cipher_input.txt")
-		if err != nil {
-			panic(err.Error())
-		}
-		stdin.File = inputFile
-		outputFile, err := os.Create("io/output.txt")
-		if err != nil {
-			panic(err.Error())
-		}
-		stdout.File = outputFile
-	}
-
-	defer stdout.WriteAll()
-	defer Recover()
-	Hackercup(stdin, stdout)
-}
+const (
+	fromFile   = false
+	inputFile  = "substitution_cipher_input.txt"
+	outputFile = "output.txt"
+)
 
 /*input
 7
@@ -63,6 +40,60 @@ Case #6: 322222222121221112223 10946
 Case #7: 24 2
 
 */
+
+func main() {
+	var stdin = &Reader{
+		File: os.Stdin,
+	}
+	var stdout = &Writer{
+		File: os.Stdout,
+	}
+
+	if fromFile {
+		inputFile, err := os.Open("io/" + inputFile)
+		if err != nil {
+			panic(err.Error())
+		}
+		stdin.File = inputFile
+
+		outputFile, err := os.Create("io/" + outputFile)
+		if err != nil {
+			panic(err.Error())
+		}
+		stdout.File = outputFile
+	}
+
+	defer stdout.WriteAll()
+	defer Recover()
+	Hackercup(stdin, stdout)
+}
+
+//package debug
+//file ..//debug/go
+
+func Recover() {
+	err := recover()
+	if err == nil {
+		return
+	}
+	buf := make([]byte, 10000)
+	n := runtime.Stack(buf, false)
+	buf = buf[:n]
+	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
+	os.Exit(13)
+}
+
+func PrintSeconds() {
+	start := time.Now()
+	ticker := time.NewTicker(time.Second * 10)
+	go func() {
+		defer Recover()
+		for range ticker.C {
+			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
+		}
+	}()
+}
+
 //package fastio
 //file ..//fastio/reader.go
 
@@ -85,7 +116,7 @@ func (r *Reader) read() bool {
 }
 
 func (r *Reader) peek() (byte, bool) {
-	for r.from == r.to {
+	if r.from == r.to {
 		if !r.read() {
 			return 0, false
 		}
@@ -255,7 +286,7 @@ func (w *Reader) Float() float64 {
 	str := w.String()
 	flt, err := strconv.ParseFloat(str, 64)
 	if err != nil {
-		return math.NaN()
+		panic("invalid float str: " + str + " err:" + err.Error())
 	}
 	return flt
 }
@@ -275,14 +306,17 @@ type Writer struct {
 }
 
 func (w *Writer) WriteAll() {
-	n, _ := w.File.Write(w.buffer[:w.used])
+	n, err := w.File.Write(w.buffer[:w.used])
 	if n != w.used {
-		panic("failed to write")
+		panic("failed to write: " + err.Error())
 	}
 	w.used = 0
 }
 
 func (w *Writer) bytes(c []byte) {
+	if len(c) >= maxIntSize {
+		panic("bytes too long")
+	}
 	copy(w.buffer[w.used:], c)
 	w.used += len(c)
 	if w.used >= buffSize-maxIntSize {
@@ -334,7 +368,6 @@ func (w *Writer) Int(value int, c byte) {
 }
 
 func (w *Writer) Uint(n uint, c byte) {
-	pos := true
 	i := maxIntSize - 1
 	w.intBuffer[i] = c
 	i--
@@ -345,10 +378,6 @@ func (w *Writer) Uint(n uint, c byte) {
 	for n != 0 {
 		w.intBuffer[i] = '0' + byte(n%10)
 		n /= 10
-		i--
-	}
-	if !pos {
-		w.intBuffer[i] = '-'
 		i--
 	}
 	w.bytes(w.intBuffer[i+1:])
@@ -369,33 +398,7 @@ func (w *Writer) Ints(n []int, sep byte) {
 
 func (w *Writer) Float(f float64) {
 	str := strconv.FormatFloat(f, 'f', -1, 64)
-	w.String(str)
-}
-
-//package debug
-//file ..//debug/go
-
-func Recover() {
-	err := recover()
-	if err == nil {
-		return
-	}
-	buf := make([]byte, 10000)
-	n := runtime.Stack(buf, false)
-	buf = buf[:n]
-	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
-	os.Exit(13)
-}
-
-func PrintSeconds() {
-	start := time.Now()
-	ticker := time.NewTicker(time.Second * 10)
-	go func() {
-		defer Recover()
-		for range ticker.C {
-			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
-		}
-	}()
+	w.bytes([]byte(str))
 }
 
 //package hackercup

@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/imports"
 )
 
 type fileInfo struct {
@@ -108,11 +110,19 @@ func TestMergeEverything(*testing.T) {
 		}
 		totalFile += packageFile
 	}
-	file, err := os.Create("main.go")
+	file, err := os.Create("generated_main.go")
 	if err != nil {
 		panic(err.Error())
 	}
-	totalFileBytes, err := format.Source([]byte(totalFile))
+
+	// Use goimports to format and remove unused imports
+	totalFileBytes, err := imports.Process("", []byte(totalFile), nil)
+	if err != nil {
+		fmt.Println("Error formatting:", err)
+		return
+	}
+
+	totalFileBytes, err = format.Source(totalFileBytes)
 	if err != nil {
 		fmt.Fprintln(file, totalFile)
 		file.Sync()
