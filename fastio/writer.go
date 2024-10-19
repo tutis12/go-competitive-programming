@@ -17,9 +17,9 @@ type Writer struct {
 }
 
 func (w *Writer) WriteAll() {
-	n, _ := w.File.Write(w.buffer[:w.used])
+	n, err := w.File.Write(w.buffer[:w.used])
 	if n != w.used {
-		panic("failed to write")
+		panic("failed to write: " + err.Error())
 	}
 	w.used = 0
 }
