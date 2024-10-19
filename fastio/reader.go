@@ -1,7 +1,6 @@
 package fastio
 
 import (
-	"math"
 	"os"
 	"strconv"
 )
@@ -25,7 +24,7 @@ func (r *Reader) read() bool {
 }
 
 func (r *Reader) peek() (byte, bool) {
-	for r.from == r.to {
+	if r.from == r.to {
 		if !r.read() {
 			return 0, false
 		}
@@ -195,7 +194,7 @@ func (w *Reader) Float() float64 {
 	str := w.String()
 	flt, err := strconv.ParseFloat(str, 64)
 	if err != nil {
-		return math.NaN()
+		panic("invalid float str: " + str + " err:" + err.Error())
 	}
 	return flt
 }

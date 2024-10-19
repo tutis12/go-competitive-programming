@@ -25,6 +25,9 @@ func (w *Writer) WriteAll() {
 }
 
 func (w *Writer) bytes(c []byte) {
+	if len(c) >= maxIntSize {
+		panic("bytes too long")
+	}
 	copy(w.buffer[w.used:], c)
 	w.used += len(c)
 	if w.used >= buffSize-maxIntSize {
@@ -76,7 +79,6 @@ func (w *Writer) Int(value int, c byte) {
 }
 
 func (w *Writer) Uint(n uint, c byte) {
-	pos := true
 	i := maxIntSize - 1
 	w.intBuffer[i] = c
 	i--
@@ -87,10 +89,6 @@ func (w *Writer) Uint(n uint, c byte) {
 	for n != 0 {
 		w.intBuffer[i] = '0' + byte(n%10)
 		n /= 10
-		i--
-	}
-	if !pos {
-		w.intBuffer[i] = '-'
 		i--
 	}
 	w.bytes(w.intBuffer[i+1:])
@@ -111,5 +109,5 @@ func (w *Writer) Ints(n []int, sep byte) {
 
 func (w *Writer) Float(f float64) {
 	str := strconv.FormatFloat(f, 'f', -1, 64)
-	w.String(str)
+	w.bytes([]byte(str))
 }
