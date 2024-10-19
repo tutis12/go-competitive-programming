@@ -7,9 +7,13 @@ import (
 	"os"
 )
 
-func main() {
-	const fromFile = true
+const (
+	fromFile   = true
+	inputFile  = "substitution_cipher_input.txt"
+	outputFile = "output.txt"
+)
 
+func main() {
 	var stdout = &fastio.Writer{
 		File: os.Stdout,
 	}
@@ -18,12 +22,12 @@ func main() {
 		File: os.Stdin,
 	}
 	if fromFile {
-		inputFile, err := os.Open("io/substitution_cipher_input.txt")
+		inputFile, err := os.Open("io/" + inputFile)
 		if err != nil {
 			panic(err.Error())
 		}
 		stdin.File = inputFile
-		outputFile, err := os.Create("io/output.txt")
+		outputFile, err := os.Create("io/" + outputFile)
 		if err != nil {
 			panic(err.Error())
 		}
