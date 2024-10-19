@@ -73,7 +73,18 @@ func TestMergeEverything(*testing.T) {
 				break
 			}
 			id1 := id + strings.Index(content[id:], ")")
-			if id1 == -1 {
+			if id1 == id-1 {
+				break
+			}
+			content = string(append([]byte(content[:id]), []byte(content[id1+1:])...))
+		}
+		for {
+			id := strings.Index(content, "import \"")
+			if id == -1 {
+				break
+			}
+			id1 := id + strings.Index(content[id:], "\n")
+			if id1 == id-1 {
 				break
 			}
 			content = string(append([]byte(content[:id]), []byte(content[id1+1:])...))
@@ -115,18 +126,21 @@ func TestMergeEverything(*testing.T) {
 		panic(err.Error())
 	}
 
-	// Use goimports to format and remove unused imports
-	totalFileBytes, err := imports.Process("", []byte(totalFile), nil)
-	if err != nil {
-		fmt.Println("Error formatting:", err)
-		return
-	}
+	src := []byte(totalFile)
 
-	totalFileBytes, err = format.Source(totalFileBytes)
+	src, err = format.Source(src)
 	if err != nil {
 		fmt.Fprintln(file, totalFile)
 		file.Sync()
 		panic(err.Error())
 	}
-	fmt.Fprintln(file, string(totalFileBytes))
+
+	// Use goimports to format and remove unused imports
+	src, err = imports.Process("", src, nil)
+	if err != nil {
+		fmt.Println("Error formatting:", err)
+		return
+	}
+
+	fmt.Fprintln(file, string(src))
 }
