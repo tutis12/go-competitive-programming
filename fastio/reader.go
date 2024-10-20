@@ -104,6 +104,10 @@ func (r *Reader) Int2() (int, int) {
 	return r.Int(), r.Int()
 }
 
+func (r *Reader) Int3() (int, int, int) {
+	return r.Int(), r.Int(), r.Int()
+}
+
 func (r *Reader) Ints(n int) []int {
 	a := make([]int, n)
 	for i := range a {

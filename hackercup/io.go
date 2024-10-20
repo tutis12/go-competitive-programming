@@ -3,17 +3,18 @@ package hackercup
 import "main/fastio"
 
 type input struct {
-	n int
+	table [6]string
 }
 
 func (input *input) Read(stdin *fastio.Reader) {
-	input.n = stdin.Int()
+	input.table = [6]string(stdin.Strings(6))
 }
 
 type output struct {
-	n int
+	result string
 }
 
 func (output *output) Print(stdout *fastio.Writer) {
-	stdout.Int(output.n, '\n')
+	stdout.String(output.result)
+	stdout.String("\n")
 }

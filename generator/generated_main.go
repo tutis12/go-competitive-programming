@@ -14,30 +14,31 @@ import (
 //file ..//go
 
 const (
-	fromFile   = false
-	inputFile  = "substitution_cipher_input.txt"
+	fromFile   = true
+	inputFile  = "bunny_hopscotch_validation_input.txt"
 	outputFile = "output.txt"
 )
 
 /*input
-7
-??2 3
-135201 1
-?35 2
-1?0 2
-1122 1
-3???????????????????3 1337
-2? 3
+4
+1 3 3
+1 1 2
+1 4 12
+1 2 3 4
+2 2 5
+1 2
+2 1
+2 3 17
+1 1 2
+1 2 2
+
 */
 
 /*output
-Case #1: 122 3
-Case #2: 135201 2
-Case #3: 135 2
-Case #4: 110 1
-Case #5: 1122 5
-Case #6: 322222222121221112223 10946
-Case #7: 24 2
+Case #1: 2
+Case #2: 3
+Case #3: 1
+Case #4: 2
 
 */
 
@@ -68,6 +69,126 @@ func main() {
 	Hackercup(stdin, stdout)
 }
 
+//package hackercup
+//file ..//hackercup/go
+
+func Hackercup(stdin *Reader, stdout *Writer) {
+	defer stdout.WriteAll()
+	defer Recover()
+	PrintSeconds()
+	tests := stdin.Uint()
+	outputs := make([]output, tests)
+	wgs := make([]sync.WaitGroup, tests)
+	doneCounter := atomic.Uint64{}
+	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
+	for i := range tests {
+		wgs[i].Add(1)
+		input := input{}
+		input.Read(stdin)
+		go func() {
+			defer Recover()
+			start := time.Now()
+			outputs[i] = solve(&input)
+			wgs[i].Done()
+			doneCnt := doneCounter.Add(1)
+			fmt.Fprintf(
+				os.Stderr,
+				"test %d (%d/%d) took %s\n",
+				i+1,
+				doneCnt,
+				tests,
+				time.Since(start),
+			)
+		}()
+	}
+	for i := range tests {
+		wgs[i].Wait()
+		stdout.String("Case #")
+		stdout.Uint(i+1, ':')
+		stdout.String(" ")
+		outputs[i].Print(stdout)
+	}
+}
+
+//package hackercup
+//file ..//hackercup/io.go
+
+type input struct {
+	R, C, K int
+	table   [][]int
+}
+
+func (input *input) Read(stdin *Reader) {
+	input.R, input.C, input.K = stdin.Int3()
+	input.table = make([][]int, input.R)
+	for i := range input.R {
+		input.table[i] = stdin.Ints(input.C)
+	}
+}
+
+type output struct {
+	result int
+}
+
+func (output *output) Print(stdout *Writer) {
+	stdout.Int(output.result, '\n')
+}
+
+//package hackercup
+//file ..//hackercup/solve.go
+
+type coord struct {
+	i, j int
+}
+
+func solve(input *input) output {
+	N := max(input.R, input.C)
+	ways := make([]atomic.Int64, N)
+	for dx := -input.R + 1; dx <= input.R-1; dx++ {
+		for dy := -input.C + 1; dy <= input.C-1; dy++ {
+			ways[max(abs(dx), abs(dy))].Add(int64((input.R - abs(dx)) * (input.C - abs(dy))))
+		}
+	}
+	RC := input.R * input.C
+	V := make([][]coord, RC+1)
+	for i := range input.R {
+		for j := range input.C {
+			V[input.table[i][j]] = append(V[input.table[i][j]], coord{i, j})
+		}
+	}
+	wg := sync.WaitGroup{}
+	wg.Add(RC + 1)
+	for i := range RC + 1 {
+		go func() {
+			for j, vj := range V[i] {
+				for _, vk := range V[i][:j] {
+					ways[max(abs(vj.i-vk.i), max(vj.j, vk.j))].Add(-2)
+				}
+			}
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+	ways[0].Store(0)
+	for i := range N {
+		if int(ways[i].Load()) >= input.K {
+			return output{
+				result: i,
+			}
+		}
+		input.K -= int(ways[i].Load())
+	}
+	panic("K too big")
+}
+
+func abs(a int) int {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
 //package debug
 //file ..//debug/go
 
@@ -76,11 +197,12 @@ func Recover() {
 	if err == nil {
 		return
 	}
+	defer os.Exit(13)
+
 	buf := make([]byte, 10000)
 	n := runtime.Stack(buf, false)
 	buf = buf[:n]
 	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
-	os.Exit(13)
 }
 
 func PrintSeconds() {
@@ -194,6 +316,10 @@ func (r *Reader) Uint() uint {
 
 func (r *Reader) Int2() (int, int) {
 	return r.Int(), r.Int()
+}
+
+func (r *Reader) Int3() (int, int, int) {
+	return r.Int(), r.Int(), r.Int()
 }
 
 func (r *Reader) Ints(n int) []int {
@@ -399,74 +525,5 @@ func (w *Writer) Ints(n []int, sep byte) {
 func (w *Writer) Float(f float64) {
 	str := strconv.FormatFloat(f, 'f', -1, 64)
 	w.bytes([]byte(str))
-}
-
-//package hackercup
-//file ..//hackercup/go
-
-func Hackercup(stdin *Reader, stdout *Writer) {
-	defer stdout.WriteAll()
-	defer Recover()
-	PrintSeconds()
-	tests := stdin.Uint()
-	outputs := make([]output, tests)
-	wgs := make([]sync.WaitGroup, tests)
-	doneCounter := atomic.Uint64{}
-	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
-	for i := range tests {
-		wgs[i].Add(1)
-		input := input{}
-		input.Read(stdin)
-		go func() {
-			defer Recover()
-			start := time.Now()
-			outputs[i] = solve(&input)
-			wgs[i].Done()
-			doneCnt := doneCounter.Add(1)
-			fmt.Fprintf(
-				os.Stderr,
-				"test %d (%d/%d) took %s\n",
-				i+1,
-				doneCnt,
-				tests,
-				time.Since(start),
-			)
-		}()
-	}
-	for i := range tests {
-		wgs[i].Wait()
-		stdout.String("Case #")
-		stdout.Uint(i+1, ':')
-		stdout.String(" ")
-		outputs[i].Print(stdout)
-	}
-}
-
-//package hackercup
-//file ..//hackercup/io.go
-
-type input struct {
-	n int
-}
-
-func (i *input) Read(stdin *Reader) {
-	i.n = stdin.Int()
-}
-
-type output struct {
-	n int
-}
-
-func (o *output) Print(stdout *Writer) {
-	stdout.Int(o.n, '\n')
-}
-
-//package hackercup
-//file ..//hackercup/solve.go
-
-func solve(input *input) output {
-	return output{
-		n: input.n,
-	}
 }
 

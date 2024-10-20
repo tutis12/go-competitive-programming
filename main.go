@@ -9,29 +9,25 @@ import (
 
 const (
 	fromFile   = false
-	inputFile  = "substitution_cipher_input.txt"
+	inputFile  = "four_in_a_burrow_input (1).txt"
 	outputFile = "output.txt"
 )
 
 /*input
-7
--1
 1
-2
-3
-4
-5
-6
+CFCCFFC
+FCFFCCF
+FFCFCFC
+CCFFCFC
+CFCFCFF
+CFCCFFC
 */
 
 /*output
-Case #1: -1
-Case #2: 1
-Case #3: 2
-Case #4: 3
-Case #5: 4
-Case #6: 5
-Case #7: 6
+Case #1: 2
+Case #2: 3
+Case #3: 1
+Case #4: 2
 
 */
 
