@@ -2,7 +2,7 @@
     "buildAndRun": {
         "go": {
             "build": "go build -o main",
-            "inputBegin": "/*input\n",
+            "inputBegin": "/*\n",
             "inputEnd": "*/",
             "outputBegin": "/*output\n",
             "outputEnd": "*/",
