@@ -94,6 +94,22 @@ func (w *Writer) Uint(n uint, c byte) {
 	w.bytes(w.intBuffer[i+1:])
 }
 
+func (w *Writer) Uint32(n uint32, c byte) {
+	i := maxIntSize - 1
+	w.intBuffer[i] = c
+	i--
+	if n == 0 {
+		w.intBuffer[i] = '0'
+		i--
+	}
+	for n != 0 {
+		w.intBuffer[i] = '0' + byte(n%10)
+		n /= 10
+		i--
+	}
+	w.bytes(w.intBuffer[i+1:])
+}
+
 func (w *Writer) Ints(n []int, sep byte) {
 	if len(n) == 0 {
 		w.String("\n")

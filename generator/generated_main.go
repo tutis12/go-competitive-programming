@@ -5,8 +5,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -14,31 +12,82 @@ import (
 //file ..//go
 
 const (
-	fromFile   = true
-	inputFile  = "bunny_hopscotch_validation_input.txt"
+	fromFile   = false
+	inputFile  = "four_in_a_burrow_input (1).txt"
 	outputFile = "output.txt"
 )
 
 /*input
-4
-1 3 3
-1 1 2
-1 4 12
-1 2 3 4
-2 2 5
-1 2
-2 1
-2 3 17
-1 1 2
-1 2 2
+3
+6 10
+1 5 7 8 11 12
+6
+1 6
+1 5
+2 6
+1 4
+2 5
+3 6
+6 1
+1 1 1 3 3 3
+2
+3 3
+1 6
+12 15
+4 5 15 24 27 32 36 39 40 46 48 48
+20
+1 12
+1 11
+6 10
+1 8
+8 12
+11 12
+2 9
+3 8
+7 8
+7 10
+4 8
+9 12
+9 10
+2 12
+1 5
+3 12
+4 8
+3 7
+7 12
+10 11
 
 */
 
 /*output
-Case #1: 2
-Case #2: 3
-Case #3: 1
-Case #4: 2
+3
+2
+2
+2
+2
+2
+1
+4
+6
+6
+2
+4
+2
+2
+5
+3
+2
+2
+2
+2
+2
+6
+4
+5
+2
+3
+2
+2
 
 */
 
@@ -66,127 +115,164 @@ func main() {
 
 	defer stdout.WriteAll()
 	defer Recover()
-	Hackercup(stdin, stdout)
+	solve(stdin, stdout)
 }
 
-//package hackercup
-//file ..//hackercup/go
+//package main
+//file ..//solve.go
 
-func Hackercup(stdin *Reader, stdout *Writer) {
-	defer stdout.WriteAll()
-	defer Recover()
-	PrintSeconds()
-	tests := stdin.Uint()
-	outputs := make([]output, tests)
-	wgs := make([]sync.WaitGroup, tests)
-	doneCounter := atomic.Uint64{}
-	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
-	for i := range tests {
-		wgs[i].Add(1)
-		input := input{}
-		input.Read(stdin)
-		go func() {
-			defer Recover()
-			start := time.Now()
-			outputs[i] = solve(&input)
-			wgs[i].Done()
-			doneCnt := doneCounter.Add(1)
-			fmt.Fprintf(
-				os.Stderr,
-				"test %d (%d/%d) took %s\n",
-				i+1,
-				doneCnt,
-				tests,
-				time.Since(start),
-			)
-		}()
-	}
-	for i := range tests {
-		wgs[i].Wait()
-		stdout.String("Case #")
-		stdout.Uint(i+1, ':')
-		stdout.String(" ")
-		outputs[i].Print(stdout)
+func solve(
+	stdin *Reader,
+	stdout *Writer,
+) {
+	t := stdin.Int()
+	for range t {
+		solveTest(stdin, stdout)
 	}
 }
 
-//package hackercup
-//file ..//hackercup/io.go
+const log = 18
 
-type input struct {
-	R, C, K int
-	table   [][]int
-}
-
-func (input *input) Read(stdin *Reader) {
-	input.R, input.C, input.K = stdin.Int3()
-	input.table = make([][]int, input.R)
-	for i := range input.R {
-		input.table[i] = stdin.Ints(input.C)
+func solveTest(
+	stdin *Reader,
+	stdout *Writer,
+) {
+	n, z := stdin.Uint32_2()
+	x := stdin.Uint32s(int(n))
+	q := stdin.Int()
+	jump := [log][]uint32{}
+	for i := range log {
+		jump[i] = make([]uint32, n+1)
 	}
-}
-
-type output struct {
-	result int
-}
-
-func (output *output) Print(stdout *Writer) {
-	stdout.Int(output.result, '\n')
-}
-
-//package hackercup
-//file ..//hackercup/solve.go
-
-type coord struct {
-	i, j int
-}
-
-func solve(input *input) output {
-	N := max(input.R, input.C)
-	ways := make([]atomic.Int64, N)
-	for dx := -input.R + 1; dx <= input.R-1; dx++ {
-		for dy := -input.C + 1; dy <= input.C-1; dy++ {
-			ways[max(abs(dx), abs(dy))].Add(int64((input.R - abs(dx)) * (input.C - abs(dy))))
+	jump[0][n] = n
+	{
+		j := uint32(1)
+		for i := range n {
+			for j < n && x[j]-x[i] <= z {
+				j++
+			}
+			jump[0][i] = j
 		}
 	}
-	RC := input.R * input.C
-	V := make([][]coord, RC+1)
-	for i := range input.R {
-		for j := range input.C {
-			V[input.table[i][j]] = append(V[input.table[i][j]], coord{i, j})
+
+	for j := 1; j < log; j++ {
+		for i := range n + 1 {
+			jump[j][i] = jump[j-1][jump[j-1][i]]
 		}
 	}
-	wg := sync.WaitGroup{}
-	wg.Add(RC + 1)
-	for i := range RC + 1 {
-		go func() {
-			for j, vj := range V[i] {
-				for _, vk := range V[i][:j] {
-					ways[max(abs(vj.i-vk.i), max(vj.j, vk.j))].Add(-2)
+
+	type big struct {
+		pos   uint32
+		jumps uint32
+	}
+	jumpBig := [log][]big{}
+	for i := range log {
+		jumpBig[i] = make([]big, n+1)
+	}
+	for pos := range n {
+		i := pos
+		j := i + 1
+		cnt := uint32(1)
+		for t := log - 1; t >= 0; t-- {
+			i1 := jump[t][i]
+			i2 := jump[t][j]
+			i3 := jump[0][i1]
+			if i1 != i2 && i2 != i3 {
+				i, j = i1, i2
+				cnt += 1 << (t + 1)
+			}
+		}
+
+		{
+			k := jump[0][i]
+
+			if k != j {
+				cnt++
+				k1 := jump[0][j]
+				_, j = j, k
+
+				{
+					k := k1
+					if k != j {
+						cnt++
+						_, j = j, k
+
+						{
+							k := jump[1][i]
+							if k != j {
+								cnt++
+								_, j = j, k
+							}
+						}
+
+					}
+				}
+
+			}
+		}
+
+		jumpBig[0][pos] = big{j, cnt}
+	}
+	jumpBig[0][n] = big{n, 0}
+	for j := 1; j < log; j++ {
+		for i := range n + 1 {
+			b1 := jumpBig[j-1][i]
+			b2 := jumpBig[j-1][b1.pos]
+			jumpBig[j][i] = big{b2.pos, b1.jumps + b2.jumps}
+		}
+	}
+	for range q {
+		l, r := stdin.Uint32_2()
+		l--
+		r--
+
+		i := l
+
+		cnt := uint32(1)
+		for t := log - 1; t >= 0; t-- {
+			b := jumpBig[t][i]
+			if b.pos <= r {
+				i = b.pos
+				cnt += b.jumps
+			}
+		}
+
+		j := i + 1
+		for t := log - 1; t >= 0; t-- {
+			i1 := jump[t][i]
+			i2 := jump[t][j]
+			i3 := jump[0][i1]
+			if i1 != i2 && i2 != i3 && i2 <= r {
+				i, j = i1, i2
+				cnt += 1 << (t + 1)
+			}
+		}
+		if j <= r {
+			cnt++
+			k := jump[0][i]
+			j0 := j
+			if k == j {
+				_, j = j, j+1
+			} else {
+				_, j = j, k
+			}
+
+			if j <= r {
+				cnt++
+				k := jump[0][j0]
+				if k == j {
+					_, j = j, j+1
+				} else {
+					_, j = j, k
+				}
+
+				if j <= r {
+					cnt++
 				}
 			}
-			wg.Done()
-		}()
-	}
-
-	wg.Wait()
-	ways[0].Store(0)
-	for i := range N {
-		if int(ways[i].Load()) >= input.K {
-			return output{
-				result: i,
-			}
 		}
-		input.K -= int(ways[i].Load())
+		stdout.Uint32(cnt, '\n')
 	}
-	panic("K too big")
-}
-
-func abs(a int) int {
-	if a < 0 {
-		return -a
-	}
-	return a
 }
 
 //package debug
@@ -314,8 +400,44 @@ func (r *Reader) Uint() uint {
 	return n
 }
 
+func (r *Reader) Uint32() uint32 {
+	n := uint32(0)
+	for {
+		c, ok := r.peek()
+		if !ok {
+			return 0
+		}
+		r.seek()
+		if '0' <= c && c <= '9' {
+			n = uint32(c - '0')
+			break
+		}
+	}
+
+	for {
+		c, ok := r.peek()
+		if !ok {
+			break
+		}
+		r.seek()
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + uint32(c-'0')
+	}
+	return n
+}
+
 func (r *Reader) Int2() (int, int) {
 	return r.Int(), r.Int()
+}
+
+func (r *Reader) UInt2() (uint, uint) {
+	return r.Uint(), r.Uint()
+}
+
+func (r *Reader) Uint32_2() (uint32, uint32) {
+	return r.Uint32(), r.Uint32()
 }
 
 func (r *Reader) Int3() (int, int, int) {
@@ -326,6 +448,22 @@ func (r *Reader) Ints(n int) []int {
 	a := make([]int, n)
 	for i := range a {
 		a[i] = r.Int()
+	}
+	return a
+}
+
+func (r *Reader) Uints(n int) []uint {
+	a := make([]uint, n)
+	for i := range a {
+		a[i] = r.Uint()
+	}
+	return a
+}
+
+func (r *Reader) Uint32s(n int) []uint32 {
+	a := make([]uint32, n)
+	for i := range a {
+		a[i] = r.Uint32()
 	}
 	return a
 }
@@ -494,6 +632,22 @@ func (w *Writer) Int(value int, c byte) {
 }
 
 func (w *Writer) Uint(n uint, c byte) {
+	i := maxIntSize - 1
+	w.intBuffer[i] = c
+	i--
+	if n == 0 {
+		w.intBuffer[i] = '0'
+		i--
+	}
+	for n != 0 {
+		w.intBuffer[i] = '0' + byte(n%10)
+		n /= 10
+		i--
+	}
+	w.bytes(w.intBuffer[i+1:])
+}
+
+func (w *Writer) Uint32(n uint32, c byte) {
 	i := maxIntSize - 1
 	w.intBuffer[i] = c
 	i--

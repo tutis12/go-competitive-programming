@@ -26,9 +26,18 @@ var controller = &treap.Controller[nodeStruct]{
 
 func TestTreap(t *testing.T) {
 	node5 := treap.NewNode(nodeStruct{5})
-	node7 := treap.NewNode(nodeStruct{10})
+	node7 := treap.NewNode(nodeStruct{7})
 	node57 := controller.Merge(node5, node7)
 	arr := controller.Array(node57)
 	str := fmt.Sprint(arr)
-	assert.Equal(t, "[{5} {10}]", str)
+	assert.Equal(t, "[{5} {7}]", str)
+}
+
+func TestTreap2(t *testing.T) {
+	node5 := treap.NewNode(nodeStruct{5})
+	node7 := treap.NewNode(nodeStruct{7})
+	node57 := controller.Merge(node5, node7)
+	node5_, node7_ := controller.Split(node57, &nodeStruct{5})
+	assert.Equal(t, 5, node5_.Value.value)
+	assert.Equal(t, 7, node7_.Value.value)
 }

@@ -47,7 +47,7 @@ func NewLazyST[value, update any](
 		applyUpdate: applyUpdate,
 		push:        push,
 	}
-	var rec func(_, _, _ int)
+	var rec func(i, l, r int)
 	rec = func(i, l, r int) {
 		if i >= len(st.arr) {
 			st.arr = append(st.arr, make([]node[value, update], i-len(st.arr)+1)...)
@@ -108,7 +108,7 @@ func (st *ST[value, update]) Get(x, y int) value {
 	}
 	var ret value
 	first := true
-	var rec func(_, _, _ int)
+	var rec func(i, l, r int)
 	rec = func(i, l, r int) {
 		if y < l || r < x {
 			return
@@ -168,7 +168,7 @@ func (st *ST[value, update]) Set(x int, v value) {
 	if x < 0 || x >= st.size {
 		panic("invalid x")
 	}
-	var rec func(_, _, _ int)
+	var rec func(i, l, r int)
 	rec = func(i, l, r int) {
 		st.fix(i, l, r)
 		if l == r {
@@ -193,7 +193,7 @@ func (st *ST[value, update]) Set(x int, v value) {
 }
 
 func (st *ST[value, update]) Update(x, y int, v update) {
-	var rec func(_, _, _ int)
+	var rec func(i, l, r int)
 	rec = func(i, l, r int) {
 		st.fix(i, l, r)
 		if y < l || r < x {
@@ -214,7 +214,7 @@ func (st *ST[value, update]) Update(x, y int, v update) {
 
 func (st *ST[value, update]) GetArray() []value {
 	arr := make([]value, st.size)
-	var rec func(_, _, _ int)
+	var rec func(i, l, r int)
 	rec = func(i, l, r int) {
 		st.fix(i, l, r)
 		if l == r {

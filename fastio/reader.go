@@ -100,8 +100,44 @@ func (r *Reader) Uint() uint {
 	return n
 }
 
+func (r *Reader) Uint32() uint32 {
+	n := uint32(0)
+	for {
+		c, ok := r.peek()
+		if !ok {
+			return 0
+		}
+		r.seek()
+		if '0' <= c && c <= '9' {
+			n = uint32(c - '0')
+			break
+		}
+	}
+
+	for {
+		c, ok := r.peek()
+		if !ok {
+			break
+		}
+		r.seek()
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + uint32(c-'0')
+	}
+	return n
+}
+
 func (r *Reader) Int2() (int, int) {
 	return r.Int(), r.Int()
+}
+
+func (r *Reader) UInt2() (uint, uint) {
+	return r.Uint(), r.Uint()
+}
+
+func (r *Reader) Uint32_2() (uint32, uint32) {
+	return r.Uint32(), r.Uint32()
 }
 
 func (r *Reader) Int3() (int, int, int) {
@@ -112,6 +148,22 @@ func (r *Reader) Ints(n int) []int {
 	a := make([]int, n)
 	for i := range a {
 		a[i] = r.Int()
+	}
+	return a
+}
+
+func (r *Reader) Uints(n int) []uint {
+	a := make([]uint, n)
+	for i := range a {
+		a[i] = r.Uint()
+	}
+	return a
+}
+
+func (r *Reader) Uint32s(n int) []uint32 {
+	a := make([]uint32, n)
+	for i := range a {
+		a[i] = r.Uint32()
 	}
 	return a
 }
