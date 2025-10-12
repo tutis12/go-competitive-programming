@@ -115,15 +115,19 @@ func (w *Writer) Uint32(n uint32, c byte) {
 	w.bytes(w.intBuffer[i+1:])
 }
 
-func (w *Writer) Ints(n []int, sep byte) {
+func (w *Writer) Char(c byte) {
+	w.bytes([]byte{c})
+}
+
+func (w *Writer) Ints(n []int, sep byte, end byte) {
 	if len(n) == 0 {
-		w.String("\n")
+		w.Char(end)
 	}
 	for i, v := range n {
 		if i != len(n)-1 {
 			w.Int(v, sep)
 		} else {
-			w.Int(v, '\n')
+			w.Int(v, end)
 		}
 	}
 }

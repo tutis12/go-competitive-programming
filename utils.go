@@ -1,6 +1,7 @@
 package main
 
 import (
+	"iter"
 	"math/bits"
 )
 
@@ -42,4 +43,26 @@ func MapArray[X, Y any](arr []X, f func(X) Y) []Y {
 		result[i] = f(v)
 	}
 	return result
+}
+
+// [start, end]
+func RangeInc(start, end int) iter.Seq[int] {
+	return func(yield func(int) bool) {
+		for i := start; i <= end; i++ {
+			if !yield(i) {
+				return
+			}
+		}
+	}
+}
+
+// [end, start]
+func RangeDec(start, end int) iter.Seq[int] {
+	return func(yield func(int) bool) {
+		for i := start; i >= end; i-- {
+			if !yield(i) {
+				return
+			}
+		}
+	}
 }

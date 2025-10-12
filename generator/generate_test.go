@@ -131,7 +131,10 @@ func TestMergeEverything(*testing.T) {
 	src, err = format.Source(src)
 	if err != nil {
 		fmt.Fprintln(file, totalFile)
-		file.Sync()
+		err1 := file.Sync()
+		if err1 != nil {
+			panic(err1.Error())
+		}
 		panic(err.Error())
 	}
 

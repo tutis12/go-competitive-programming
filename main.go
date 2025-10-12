@@ -7,10 +7,35 @@ import (
 )
 
 const (
+	task       = "A"
 	fromFile   = false
 	inputFile  = "input.txt"
 	outputFile = "output.txt"
 )
+
+func solveTask(
+	stdin *fastio.Reader,
+	stdout *fastio.Writer,
+) {
+	switch task {
+	case "A":
+		solveA(stdin, stdout)
+	case "B":
+		solveB(stdin, stdout)
+	case "C":
+		solveC(stdin, stdout)
+	case "D":
+		solveD(stdin, stdout)
+	case "E":
+		solveE(stdin, stdout)
+	case "F":
+		solveF(stdin, stdout)
+	case "G":
+		solveG(stdin, stdout)
+	default:
+		panic("unknown task")
+	}
+}
 
 func main() {
 	var stdin = &fastio.Reader{
@@ -33,8 +58,8 @@ func main() {
 		}
 		stdout.File = outputFile
 	}
-
 	defer stdout.WriteAll()
 	defer debug.Recover()
-	solve(stdin, stdout)
+
+	solveTask(stdin, stdout)
 }
