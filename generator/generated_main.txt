@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -13,35 +14,10 @@ import (
 //file ..//go
 
 const (
-	task       = "A"
 	fromFile   = false
 	inputFile  = "input.txt"
 	outputFile = "output.txt"
 )
-
-func solveTask(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	switch task {
-	case "A":
-		solveA(stdin, stdout)
-	case "B":
-		solveB(stdin, stdout)
-	case "C":
-		solveC(stdin, stdout)
-	case "D":
-		solveD(stdin, stdout)
-	case "E":
-		solveE(stdin, stdout)
-	case "F":
-		solveF(stdin, stdout)
-	case "G":
-		solveG(stdin, stdout)
-	default:
-		panic("unknown task")
-	}
-}
 
 func main() {
 	var stdin = &Reader{
@@ -67,11 +43,13 @@ func main() {
 	defer stdout.WriteAll()
 	defer Recover()
 
-	solveTask(stdin, stdout)
+	solveX(stdin, stdout)
 }
 
 //package main
 //file ..//solve_a.go
+
+// var solveX = solveA
 
 func solveA(
 	stdin *Reader,
@@ -91,14 +69,17 @@ func solveTestA(
 }
 
 /*input
-
- */
+1
+2
+*/
 
 /*output
 
  */
 //package main
 //file ..//solve_b.go
+
+// var solveX = solveB
 
 func solveB(
 	stdin *Reader,
@@ -110,22 +91,124 @@ func solveB(
 	}
 }
 
+const inf = 1_000_000
+
 func solveTestB(
 	stdin *Reader,
 	stdout *Writer,
 ) {
+	n, m := stdin.Int2()
+	G := make([][]int, n)
+	for i := 0; i < n; i++ {
+		G[i] = make([]int, m)
+		s := stdin.String()
+		for j := 0; j < m; j++ {
+			G[i][j] = CastBool(s[j] == '1')
+		}
+	}
+	flip := false
+	if n > m {
+		n, m = m, n
+		flip = true
+		Transpose(&G)
+	}
+	answer := make([][]int, n)
+	for i := 0; i < n; i++ {
+		answer[i] = make([]int, m)
+		for j := 0; j < m; j++ {
+			answer[i][j] = inf
+		}
+	}
 
+	answerI1 := make([][]int, n)
+	for i := 0; i < n; i++ {
+		answerI1[i] = make([]int, m)
+	}
+	for i1 := 0; i1 < n; i1++ {
+		for i := 0; i < n; i++ {
+			for j := 0; j < m; j++ {
+				answerI1[i][j] = inf
+			}
+		}
+		for i2 := i1 + 1; i2 < n; i2++ {
+			diffI := i2 - i1 + 1
+			lastj := -1
+			for j := 0; j < m; j++ {
+				if G[i1][j] == 1 && G[i2][j] == 1 {
+					if lastj != -1 {
+						diffJ := j - lastj + 1
+						area := diffI * diffJ
+						for jj := lastj; jj <= j; jj++ {
+							answerI1[i2][jj] = min(answerI1[i2][jj], area)
+						}
+					}
+					lastj = j
+				}
+			}
+		}
+
+		//stdout.Fprintf("%d:\n %v\n", i1, answerI1)
+		for j := 0; j < m; j++ {
+			ans := inf
+			for i := n - 1; i >= i1; i-- {
+				ans = min(ans, answerI1[i][j])
+				answer[i][j] = min(answer[i][j], ans)
+			}
+		}
+	}
+
+	if flip {
+		Transpose(&answer)
+	}
+	for _, v := range answer {
+		for _, v := range v {
+			if v >= inf {
+				v = 0
+			}
+			stdout.Int(v, ' ')
+		}
+		stdout.Char('\n')
+	}
 }
 
 /*input
-
- */
+3
+3 5
+10101
+10100
+00101
+4 6
+011101
+010001
+100010
+101110
+5 5
+11100
+10110
+11111
+01101
+00111
+*/
 
 /*output
+6 6 6 9 9
+6 6 6 9 9
+0 0 9 9 9
+0 10 8 8 10 10
+0 10 8 8 10 10
+10 10 8 8 10 0
+10 10 8 8 10 0
+6 6 6 0 0
+6 6 4 4 0
+6 4 4 4 6
+0 4 4 6 6
+0 0 6 6 6
 
- */
+*/
 //package main
 //file ..//solve_c.go
+
+// var solveX = solveC
 
 func solveC(
 	stdin *Reader,
@@ -141,18 +224,92 @@ func solveTestC(
 	stdin *Reader,
 	stdout *Writer,
 ) {
+	n := stdin.Int()
+	a := stdin.Ints(n, 0)
+	type stValue struct {
+		minA  int
+		minDP int
+	}
+	type lazy struct {
+		addDP int
+	}
+	st := NewLazyST(
+		func(i int) stValue {
+			return stValue{
+				minA:  a[i],
+				minDP: 0,
+			}
+		},
+		n,
+		lazy{},
+		func(a, b stValue) stValue {
+			return stValue{
+				minA:  min(a.minA, b.minA),
+				minDP: min(a.minDP, b.minDP),
+			}
+		},
+		func(lazy lazy, val *stValue) {
+			val.minDP += lazy.addDP
+		},
+		func(top lazy, being_updated *lazy) {
+			being_updated.addDP += top.addDP
+		},
+	)
 
+	dp := make([]int, n)
+
+	for i, ai := range a {
+		dp[i] = i + 1
+		for cost := 1; cost <= 4; cost++ {
+			l, ok := st.BinarySearchOnLeftIndex(i, func(x stValue) bool {
+				return x.minA*cost < ai
+			})
+			if !ok {
+				l = 0
+			} else {
+				l++
+			}
+			var total int
+			if l == 0 {
+				total = cost
+			} else {
+				total = st.Get(l-1, i-1).minDP + cost
+			}
+			dp[i] = min(dp[i], total)
+		}
+		st.Update(i, i, lazy{addDP: dp[i]})
+	}
+	stdout.Int(dp[n-1], '\n')
 }
 
 /*input
+4
+5
+3 1 4 1 5
+10
+9 2 6 5 3 5 8 9 7 9
+8
+1 2 3 4 5 6 7 8
+2
+1 1000000000000000000
 
- */
+*/
 
 /*output
+2
+4
+5
+2
 
- */
+*/
 //package main
 //file ..//solve_d.go
+
+const (
+	mod = 1000000007
+)
+
+//var solveX = solveD
 
 func solveD(
 	stdin *Reader,
@@ -168,18 +325,82 @@ func solveTestD(
 	stdin *Reader,
 	stdout *Writer,
 ) {
+	n := stdin.Int()
+	a := stdin.Ints(n+1, 0)
+	answer := count(n, a)
+	a[n] = 0
+	answer -= count(n, a)
+	answer += mod
+	answer %= mod
+	stdout.Int(answer, '\n')
+}
 
+func count(n int, a []int) int {
+	for i := range n + 1 {
+		if a[i] < -1 || a[i] > n {
+			return 0
+		}
+	}
+	cnt := make([]int, n+1)
+	for i := range n + 1 {
+		if a[i] != -1 {
+			cnt[a[i]]++
+		}
+	}
+	for i := 1; i <= n; i++ {
+		if cnt[i] >= 2 {
+			return 0
+		}
+	}
+	for i := 1; i <= n; i++ {
+		if cnt[i] != 0 && a[i] == 0 {
+			return 0
+		}
+	}
+	c := 0
+	for i := 1; i <= n; i++ {
+		if cnt[i] == 0 {
+			c++
+		}
+	}
+	ret := 1
+	for i := 1; i <= c+1; i++ {
+		ret *= i
+		ret %= mod
+	}
+	return ret
 }
 
 /*input
+6
+1
+-1 -1
+2
+-1 2 -1
+2
+-1 -1 -1
+3
+-1 -1 3 -1
+3
+-1 2 3 -1
+5
+-1 -1 -1 1 0 -1
 
- */
+*/
 
 /*output
+1
+1
+3
+2
+0
+3
 
- */
+*/
 //package main
 //file ..//solve_e.go
+
+// var solveX = solveE
 
 func solveE(
 	stdin *Reader,
@@ -208,6 +429,8 @@ func solveTestE(
 //package main
 //file ..//solve_f.go
 
+var solveX = solveF
+
 func solveF(
 	stdin *Reader,
 	stdout *Writer,
@@ -222,18 +445,242 @@ func solveTestF(
 	stdin *Reader,
 	stdout *Writer,
 ) {
+	n, m := stdin.Int2()
+	queryMap = make([][]int, n+1)
+	maxT := 2*n - 1
+	for i := range queryMap {
+		queryMap[i] = make([]int, maxT+1)
+	}
+	g := make([][]int, n)
+	for i := range n {
+		g[i] = stdin.Ints(n, 0)
+	}
+	{
+		max1 := 0
+		for j := range n {
+			max1 = max(max1, g[0][j])
+			queryMap[j+1][1] = max1
+		}
+	}
+	{
+		max2 := g[1][0]
+		for j := range n {
+			queryMap[j+1][2] = max2
+			max2 = max(max2, g[0][j])
+		}
+	}
+	time := make([]int, n*n+1)
+	for i := range n {
+		for j := range n {
+			if i == 0 {
+				time[g[i][j]] = 1 - i
+			} else {
+				time[g[i][j]] = 1 + i + j
+			}
+		}
+	}
+	toCheck := make([][]queryKey, n*n+1)
+	inserted := make([][]bool, n+1)
+	for i := range inserted {
+		inserted[i] = make([]bool, maxT+1)
+	}
+	insertToCheck := func(length, t int) {
+		if t < 1 || t > maxT {
+			return
+		}
+		if inserted[length][t] {
+			return
+		}
+		inserted[length][t] = true
+		val := query(stdin, stdout, length, t)
+		toCheck[val] = append(toCheck[val], queryKey{length, t})
+	}
+	for length := 1; length <= n; length++ {
+		findValley := func(left, right int) {
+			if left <= 0 {
+				return
+			}
+			if right > maxT {
+				return
+			}
+			if left > right {
+				return
+			}
+			for right-left+1 >= 3 {
+				mid := (left + right) / 2
+				ans := query(stdin, stdout, length, mid)
+				insertToCheck(length, mid)
+				time := time[ans]
+				t1 := time - 1
+				if t1 >= left && t1 < mid && query(stdin, stdout, length, t1) < ans {
+					right = mid - 1
+				} else {
+					left = mid + 1
+				}
+			}
+			for t := left; t <= right; t++ {
+				insertToCheck(length, t)
+			}
+		}
+		peaks := make(map[int]struct{}, 0)
+		peaks[1] = struct{}{}
+		peaks[maxT] = struct{}{}
+		for t := 1; t <= maxT+length-1; t += length {
+			t1 := min(t, maxT)
+			ans1 := time[query(stdin, stdout, length, t1)]
+			peaks[ans1] = struct{}{}
+			peaks[ans1+length-1] = struct{}{}
+		}
+		peaksArr := CollectMap(peaks)
+		slices.Sort(peaksArr)
+		for i := 1; i < len(peaksArr); i++ {
+			findValley(peaksArr[i-1], peaksArr[i])
+		}
+		for i := 0; i < len(peaksArr); i++ {
+			insertToCheck(length, peaksArr[i])
+		}
+	}
+	answer := make([]int, m)
+	checked := make(map[queryKey]struct{}, 0)
+	minVal := 0
+	for i := range m {
+		for {
+			if len(toCheck[minVal]) > 0 {
+				break
+			} else {
+				minVal++
+			}
+		}
+		key := toCheck[minVal][0]
+		toCheck[minVal] = toCheck[minVal][1:]
+		if len(toCheck) == 0 {
+			panic("ran out of toCheck")
+		}
+		answer[i] = minVal
+		checked[key] = struct{}{}
+		for _, dt := range [2]int{-1, 1} {
+			neighbor := queryKey{key.L, key.T + dt}
+			if neighbor.T < 1 || neighbor.T > maxT {
+				continue
+			}
+			_, ok := checked[neighbor]
+			if !ok {
+				insertToCheck(neighbor.L, neighbor.T)
+			}
+		}
+	}
+	stdout.String("! ")
+	stdout.Ints(answer, ' ', '\n')
+	stdout.WriteAll()
+}
 
+type queryKey struct {
+	L int
+	T int
+}
+
+var queryMap [][]int
+
+func query(
+	stdin *Reader,
+	stdout *Writer,
+	L int,
+	T int,
+) int {
+	res := queryMap[L][T]
+	if res != 0 {
+		return res
+	}
+	stdout.Fprintf("? %d %d\n", L, T)
+	stdout.WriteAll()
+	res = stdin.Int()
+	queryMap[L][T] = res
+	return res
 }
 
 /*input
+1
+3 15
+4 2 5
+1 9 3
+7 6 8
 
- */
+4
+
+1
+
+9
+
+6
+
+8
+
+4
+
+4
+
+7
+
+7
+
+8
+
+5
+
+4
+
+9
+
+9
+
+9
+
+
+*/
 
 /*output
 
- */
+
+
+
+
+? 1 1
+
+? 1 2
+
+? 1 3
+
+? 1 4
+
+? 1 5
+
+? 2 1
+
+? 2 2
+
+? 2 3
+
+? 2 4
+
+? 2 5
+
+? 3 1
+
+? 3 2
+
+? 3 3
+
+? 3 4
+
+? 3 5
+
+! 1 4 4 4 4 5 6 7 7 8 8 9 9 9 9
+
+*/
 //package main
 //file ..//solve_g.go
+
+// var solveX = solveG
 
 func solveG(
 	stdin *Reader,
@@ -302,31 +749,26 @@ func MapArray[X, Y any](arr []X, f func(X) Y) []Y {
 	return result
 }
 
-//package debug
-//file ..//debug/go
-
-func Recover() {
-	err := recover()
-	if err == nil {
-		return
+func Transpose(X *[][]int) {
+	M := *X
+	n := len(M)
+	m := len(M[0])
+	M2 := make([][]int, m)
+	for i := 0; i < m; i++ {
+		M2[i] = make([]int, n)
+		for j := 0; j < n; j++ {
+			M2[i][j] = M[j][i]
+		}
 	}
-	defer os.Exit(13)
-
-	buf := make([]byte, 10000)
-	n := runtime.Stack(buf, false)
-	buf = buf[:n]
-	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
+	*X = M2
 }
 
-func PrintSeconds() {
-	start := time.Now()
-	ticker := time.NewTicker(time.Second * 10)
-	go func() {
-		defer Recover()
-		for range ticker.C {
-			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
-		}
-	}()
+func CollectMap[X comparable](m map[X]struct{}) []X {
+	res := make([]X, 0, len(m))
+	for k := range m {
+		res = append(res, k)
+	}
+	return res
 }
 
 //package fastio
@@ -698,5 +1140,314 @@ func (w *Writer) Ints(n []int, sep byte, end byte) {
 func (w *Writer) Float(f float64) {
 	str := strconv.FormatFloat(f, 'f', -1, 64)
 	w.bytes([]byte(str))
+}
+
+//package segment_tree
+//file ..//segment_tree/go
+
+type node[value, update any] struct {
+	value  value
+	update update
+}
+
+type ST[value, update any] struct {
+	size        int
+	arr         []node[value, update]
+	zeroUpdate  update
+	merge       func(value, value) value
+	applyUpdate func(update, *value)
+	push        func(top update, being_updated *update)
+}
+
+func NewST[value any](
+	init func(int) value,
+	size int,
+	merge func(value, value) value,
+) *ST[value, struct{}] {
+	return NewLazyST(
+		init,
+		size,
+		struct{}{},
+		merge,
+		func(struct{}, *value) {},
+		func(struct{}, *struct{}) {},
+	)
+}
+
+func NewLazyST[value, update any](
+	init func(int) value,
+	size int,
+	zeroUpdate update,
+	merge func(value, value) value,
+	applyUpdate func(update, *value),
+	push func(top update, being_updated *update),
+) *ST[value, update] {
+	if size <= 0 {
+		panic("size not positive")
+	}
+	st := ST[value, update]{
+		size:        size,
+		merge:       merge,
+		zeroUpdate:  zeroUpdate,
+		applyUpdate: applyUpdate,
+		push:        push,
+	}
+	var rec func(i, l, r int)
+	rec = func(i, l, r int) {
+		if i >= len(st.arr) {
+			st.arr = append(st.arr, make([]node[value, update], i-len(st.arr)+1)...)
+		}
+		if l == r {
+			st.arr[i] = node[value, update]{
+				init(l),
+				zeroUpdate,
+			}
+		} else {
+			mid := (l + r) / 2
+			rec(2*i+1, l, mid)
+			rec(2*i+2, mid+1, r)
+			st.arr[i] = node[value, update]{
+				merge(st.arr[2*i+1].value, st.arr[2*i+2].value),
+				zeroUpdate,
+			}
+		}
+	}
+	rec(0, 0, size-1)
+	return &st
+}
+
+func (st *ST[value, update]) fix(i, l, r int) {
+	node := &st.arr[i]
+	if l != r {
+		st.push(node.update, &st.arr[2*i+1].update)
+		st.push(node.update, &st.arr[2*i+2].update)
+	}
+	st.applyUpdate(node.update, &node.value)
+	node.update = st.zeroUpdate
+}
+
+func (st *ST[value, update]) Total() value {
+	st.fix(0, 0, st.size-1)
+	return st.arr[0].value
+}
+
+func (st *ST[value, update]) Merge(a, b value) value {
+	return st.merge(a, b)
+}
+
+func (st *ST[value, update]) Get(x, y int) value {
+	x = max(x, 0)
+	y = min(y, st.size-1)
+	if x > y {
+		panic("invalid range")
+	}
+	i := 0
+	l := 0
+	r := st.size - 1
+	for {
+		st.fix(i, l, r)
+		if l == r {
+			return st.arr[i].value
+		}
+		mid := (l + r) / 2
+		if y <= mid {
+			i = 2*i + 1
+			r = mid
+		} else if x > mid {
+			i = 2*i + 2
+			l = mid + 1
+		} else {
+			break
+		}
+	}
+	var ret value
+	first := true
+	var rec func(i, l, r int)
+	rec = func(i, l, r int) {
+		if y < l || r < x {
+			return
+		}
+		st.fix(i, l, r)
+		if x <= l && r <= y {
+			valPtr := st.arr[i].value
+			if first {
+				first = false
+				ret = valPtr
+			} else {
+				ret = st.merge(ret, valPtr)
+			}
+			return
+		}
+		mid := (l + r) / 2
+		rec(2*i+1, l, mid)
+		rec(2*i+2, mid+1, r)
+	}
+	mid := (l + r) / 2
+	l_ := l
+	r_ := mid
+	for j := 2*i + 1; ; {
+		st.fix(j, l_, r_)
+		if x <= l_ {
+			valPtr := st.arr[j].value
+			if first {
+				first = false
+				ret = valPtr
+			} else {
+				ret = st.merge(valPtr, ret)
+			}
+			break
+		}
+		mid_ := (l_ + r_) / 2
+		if x <= mid_ {
+			st.fix(2*j+2, mid_+1, r_)
+			valPtr := st.arr[2*j+2].value
+			if first {
+				first = false
+				ret = valPtr
+			} else {
+				ret = st.merge(valPtr, ret)
+			}
+			j = 2*j + 1
+			r_ = mid_
+		} else {
+			j = 2*j + 2
+			l_ = mid_ + 1
+		}
+	}
+	rec(2*i+2, mid+1, r)
+	return ret
+}
+
+func (st *ST[value, update]) Set(x int, v value) {
+	if x < 0 || x >= st.size {
+		panic("invalid x")
+	}
+	var rec func(i, l, r int)
+	rec = func(i, l, r int) {
+		st.fix(i, l, r)
+		if l == r {
+			st.arr[i] = node[value, update]{
+				v,
+				st.zeroUpdate,
+			}
+			st.fix(i, l, r)
+			return
+		}
+		mid := (l + r) / 2
+		if x <= mid {
+			rec(2*i+1, l, mid)
+			st.fix(2*i+2, mid+1, r)
+		} else {
+			st.fix(2*i+1, l, mid)
+			rec(2*i+2, mid+1, r)
+		}
+		st.arr[i].value = st.merge(st.arr[2*i+1].value, st.arr[2*i+2].value)
+	}
+	rec(0, 0, st.size-1)
+}
+
+// returns highest bound x such that predicate is true for [x,y]
+func (st *ST[value, update]) BinarySearchOnLeftIndex(y int, predicate func(value) bool) (int, bool) {
+	if y < 0 || y >= st.size {
+		panic("invalid y")
+	}
+	var zeroValue value
+
+	var rec func(i, l, r int, valueToRight value) (int, value, bool)
+	rec = func(i, l, r int, valueToRight value) (int, value, bool) {
+		st.fix(i, l, r)
+		if l != r {
+			mid := (l + r) / 2
+			if y <= mid {
+				return rec(2*i+1, l, mid, zeroValue)
+			}
+		}
+		var combined value
+		if r == y {
+			combined = st.arr[i].value
+		} else if y >= r {
+			combined = st.merge(st.arr[i].value, valueToRight)
+		}
+
+		if y >= r && !predicate(combined) {
+			return -1, combined, false
+		}
+		if l == r {
+			return l, zeroValue, true
+		}
+		mid := (l + r) / 2
+		x, value, ok := rec(2*i+2, mid+1, r, valueToRight)
+		if ok {
+			return x, zeroValue, true
+		} else {
+			return rec(2*i+1, l, mid, value)
+		}
+	}
+	i, _, ok := rec(0, 0, st.size-1, zeroValue)
+	return i, ok
+}
+
+func (st *ST[value, update]) Update(x, y int, v update) {
+	var rec func(i, l, r int)
+	rec = func(i, l, r int) {
+		st.fix(i, l, r)
+		if y < l || r < x {
+			return
+		}
+		if x <= l && r <= y {
+			st.push(v, &st.arr[i].update)
+			st.fix(i, l, r)
+			return
+		}
+		mid := (l + r) / 2
+		rec(2*i+1, l, mid)
+		rec(2*i+2, mid+1, r)
+		st.arr[i].value = st.merge(st.arr[2*i+1].value, st.arr[2*i+2].value)
+	}
+	rec(0, 0, st.size-1)
+}
+
+func (st *ST[value, update]) GetArray() []value {
+	arr := make([]value, st.size)
+	var rec func(i, l, r int)
+	rec = func(i, l, r int) {
+		st.fix(i, l, r)
+		if l == r {
+			arr[l] = st.arr[i].value
+			return
+		}
+		mid := (l + r) / 2
+		rec(2*i+1, l, mid)
+		rec(2*i+2, mid+1, r)
+	}
+	rec(0, 0, st.size-1)
+	return arr
+}
+
+//package debug
+//file ..//debug/go
+
+func Recover() {
+	err := recover()
+	if err == nil {
+		return
+	}
+	defer os.Exit(13)
+
+	buf := make([]byte, 10000)
+	n := runtime.Stack(buf, false)
+	buf = buf[:n]
+	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
+}
+
+func PrintSeconds() {
+	start := time.Now()
+	ticker := time.NewTicker(time.Second * 10)
+	go func() {
+		defer Recover()
+		for range ticker.C {
+			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
+		}
+	}()
 }
 

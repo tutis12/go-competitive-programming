@@ -211,22 +211,26 @@ func (st *ST[value, update]) BinarySearchOnLeftIndex(y int, predicate func(value
 	var rec func(i, l, r int, valueToRight value) (int, value, bool)
 	rec = func(i, l, r int, valueToRight value) (int, value, bool) {
 		st.fix(i, l, r)
+		if l != r {
+			mid := (l + r) / 2
+			if y <= mid {
+				return rec(2*i+1, l, mid, zeroValue)
+			}
+		}
 		var combined value
 		if r == y {
 			combined = st.arr[i].value
-		} else {
+		} else if y >= r {
 			combined = st.merge(st.arr[i].value, valueToRight)
 		}
-		if !predicate(combined) {
+
+		if y >= r && !predicate(combined) {
 			return -1, combined, false
 		}
 		if l == r {
 			return l, zeroValue, true
 		}
 		mid := (l + r) / 2
-		if y <= mid {
-			return rec(2*i+1, l, mid, zeroValue)
-		}
 		x, value, ok := rec(2*i+2, mid+1, r, valueToRight)
 		if ok {
 			return x, zeroValue, true

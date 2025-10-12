@@ -4,6 +4,8 @@ import (
 	"main/fastio"
 )
 
+// var solveX = solveA
+
 func solveA(
 	stdin *fastio.Reader,
 	stdout *fastio.Writer,
@@ -22,8 +24,9 @@ func solveTestA(
 }
 
 /*input
-
- */
+1
+2
+*/
 
 /*output
 

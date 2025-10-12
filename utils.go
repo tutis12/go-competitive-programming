@@ -1,7 +1,6 @@
 package main
 
 import (
-	"iter"
 	"math/bits"
 )
 
@@ -45,24 +44,24 @@ func MapArray[X, Y any](arr []X, f func(X) Y) []Y {
 	return result
 }
 
-// [start, end]
-func RangeInc(start, end int) iter.Seq[int] {
-	return func(yield func(int) bool) {
-		for i := start; i <= end; i++ {
-			if !yield(i) {
-				return
-			}
+func Transpose(X *[][]int) {
+	M := *X
+	n := len(M)
+	m := len(M[0])
+	M2 := make([][]int, m)
+	for i := 0; i < m; i++ {
+		M2[i] = make([]int, n)
+		for j := 0; j < n; j++ {
+			M2[i][j] = M[j][i]
 		}
 	}
+	*X = M2
 }
 
-// [end, start]
-func RangeDec(start, end int) iter.Seq[int] {
-	return func(yield func(int) bool) {
-		for i := start; i >= end; i-- {
-			if !yield(i) {
-				return
-			}
-		}
+func CollectMap[X comparable](m map[X]struct{}) []X {
+	res := make([]X, 0, len(m))
+	for k := range m {
+		res = append(res, k)
 	}
+	return res
 }
