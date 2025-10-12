@@ -1,6 +1,8 @@
 package treap
 
-import "math/rand/v2"
+import (
+	"math/rand/v2"
+)
 
 type Controller[V any] struct {
 	Push func(*Node[V])
@@ -31,19 +33,61 @@ func (n *Node[V]) Size() int {
 }
 
 func (c *Controller[V]) GetI(x *Node[V], i int) (*Node[V], bool) {
-	if x == nil {
-		return nil, false
+	for {
+		if x == nil {
+			return nil, false
+		}
+		c.Push(x)
+		sz0 := x.C[0].Size()
+		if sz0 == i {
+			return x, true
+		}
+		if i < sz0 {
+			x = x.C[0]
+		} else {
+			x, i = x.C[1], i-1-sz0
+		}
 	}
-	c.Push(x)
-	sz0 := x.C[0].Size()
-	if sz0 == i {
-		return x, true
+}
+
+func (c *Controller[V]) Contains(x *Node[V], ctx *V) bool {
+	for x != nil {
+		c.Push(x)
+		if c.Less(ctx, &x.Value) {
+			x = x.C[0]
+		} else {
+			if !c.Less(&x.Value, ctx) {
+				return true
+			}
+			x = x.C[1]
+		}
 	}
-	if i < sz0 {
-		return c.GetI(x.C[0], i)
-	} else {
-		return c.GetI(x.C[1], i-1-sz0)
+	return false
+}
+
+func (c *Controller[Value]) InsertI(
+	root *Node[Value],
+	v Value,
+	i int,
+) *Node[Value] {
+	left, right := c.SplitK(root, i)
+	return c.Merge(c.Merge(left, NewNode(v)), right)
+}
+
+func (c *Controller[Value]) Insert(
+	root *Node[Value],
+	v Value,
+	allowRepetition bool,
+) *Node[Value] {
+	left, right := c.Split(root, &v)
+
+	if !allowRepetition {
+		maybeSame := c.Last(left) // <=v
+		if maybeSame != nil && !c.Less(&maybeSame.Value, &v) {
+			return c.Merge(left, right)
+		}
 	}
+	return c.Merge(c.Merge(left, NewNode(v)), right)
 }
 
 func (c *Controller[V]) Merge(x, y *Node[V]) *Node[V] {
@@ -60,16 +104,14 @@ func (c *Controller[V]) Merge(x, y *Node[V]) *Node[V] {
 	}
 	if x.Seed > y.Seed {
 		c.Push(x)
-		xx := *x
-		xx.C[1] = c.Merge(x.C[1], y)
-		c.Pull(&xx)
-		return &xx
+		x.C[1] = c.Merge(x.C[1], y)
+		c.Pull(x)
+		return x
 	} else {
 		c.Push(y)
-		yy := *y
-		yy.C[0] = c.Merge(x, y.C[0])
-		c.Pull(&yy)
-		return &yy
+		y.C[0] = c.Merge(x, y.C[0])
+		c.Pull(y)
+		return y
 	}
 }
 
@@ -121,4 +163,37 @@ func (c *Controller[V]) Array(x *Node[V]) []V {
 	arr = append(arr, x.Value)
 	arr = append(arr, c.Array(x.C[1])...)
 	return arr
+}
+
+func (c *Controller[V]) Last(n *Node[V]) *Node[V] {
+	if n == nil {
+		return nil
+	}
+	for n.C[1] != nil {
+		c.Push(n)
+		n = n.C[1]
+	}
+	c.Push(n)
+	return n
+}
+
+func (c *Controller[V]) First(n *Node[V]) *Node[V] {
+	if n == nil {
+		return nil
+	}
+	for n.C[0] != nil {
+		c.Push(n)
+		n = n.C[0]
+	}
+	c.Push(n)
+	return n
+}
+
+func (c *Controller[V]) GetValue(root *Node[V]) (V, bool) {
+	if root == nil {
+		var zero V
+		return zero, false
+	}
+	c.Push(root)
+	return root.Value, true
 }
