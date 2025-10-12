@@ -26,15 +26,15 @@ func TestLazySegmentTree(t *testing.T) {
 		updateStruct{
 			add: 0,
 		},
-		func(i1, i2 *valueStruct) valueStruct {
+		func(i1, i2 valueStruct) valueStruct {
 			return valueStruct{
 				value: max(i1.value, i2.value),
 			}
 		},
-		func(update *updateStruct, value *valueStruct) {
+		func(update updateStruct, value *valueStruct) {
 			value.value += update.add
 		},
-		func(top, being_updated *updateStruct) {
+		func(top updateStruct, being_updated *updateStruct) {
 			being_updated.add += top.add
 		},
 	)

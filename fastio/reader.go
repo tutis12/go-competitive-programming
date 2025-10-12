@@ -144,26 +144,10 @@ func (r *Reader) Int3() (int, int, int) {
 	return r.Int(), r.Int(), r.Int()
 }
 
-func (r *Reader) Ints(n int) []int {
-	a := make([]int, n)
-	for i := range a {
-		a[i] = r.Int()
-	}
-	return a
-}
-
-func (r *Reader) Uints(n int) []uint {
-	a := make([]uint, n)
-	for i := range a {
-		a[i] = r.Uint()
-	}
-	return a
-}
-
-func (r *Reader) Uint32s(n int) []uint32 {
-	a := make([]uint32, n)
-	for i := range a {
-		a[i] = r.Uint32()
+func (r *Reader) Ints(n int, firstIndex int) []int {
+	a := make([]int, n+firstIndex)
+	for i := range n {
+		a[i+firstIndex] = r.Int()
 	}
 	return a
 }

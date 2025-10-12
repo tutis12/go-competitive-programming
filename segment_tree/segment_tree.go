@@ -9,23 +9,23 @@ type ST[value, update any] struct {
 	size        int
 	arr         []node[value, update]
 	zeroUpdate  update
-	merge       func(*value, *value) value
-	applyUpdate func(*update, *value)
-	push        func(top *update, being_updated *update)
+	merge       func(value, value) value
+	applyUpdate func(update, *value)
+	push        func(top update, being_updated *update)
 }
 
 func NewST[value any](
 	init func(int) value,
 	size int,
-	merge func(*value, *value) value,
+	merge func(value, value) value,
 ) *ST[value, struct{}] {
 	return NewLazyST(
 		init,
 		size,
 		struct{}{},
 		merge,
-		func(*struct{}, *value) {},
-		func(*struct{}, *struct{}) {},
+		func(struct{}, *value) {},
+		func(struct{}, *struct{}) {},
 	)
 }
 
@@ -33,9 +33,9 @@ func NewLazyST[value, update any](
 	init func(int) value,
 	size int,
 	zeroUpdate update,
-	merge func(*value, *value) value,
-	applyUpdate func(*update, *value),
-	push func(top *update, being_updated *update),
+	merge func(value, value) value,
+	applyUpdate func(update, *value),
+	push func(top update, being_updated *update),
 ) *ST[value, update] {
 	if size <= 0 {
 		panic("size not positive")
@@ -62,7 +62,7 @@ func NewLazyST[value, update any](
 			rec(2*i+1, l, mid)
 			rec(2*i+2, mid+1, r)
 			st.arr[i] = node[value, update]{
-				merge(&st.arr[2*i+1].value, &st.arr[2*i+2].value),
+				merge(st.arr[2*i+1].value, st.arr[2*i+2].value),
 				zeroUpdate,
 			}
 		}
@@ -74,11 +74,20 @@ func NewLazyST[value, update any](
 func (st *ST[value, update]) fix(i, l, r int) {
 	node := &st.arr[i]
 	if l != r {
-		st.push(&node.update, &st.arr[2*i+1].update)
-		st.push(&node.update, &st.arr[2*i+2].update)
+		st.push(node.update, &st.arr[2*i+1].update)
+		st.push(node.update, &st.arr[2*i+2].update)
 	}
-	st.applyUpdate(&node.update, &node.value)
+	st.applyUpdate(node.update, &node.value)
 	node.update = st.zeroUpdate
+}
+
+func (st *ST[value, update]) Total() value {
+	st.fix(0, 0, st.size-1)
+	return st.arr[0].value
+}
+
+func (st *ST[value, update]) Merge(a, b value) value {
+	return st.merge(a, b)
 }
 
 func (st *ST[value, update]) Get(x, y int) value {
@@ -115,12 +124,12 @@ func (st *ST[value, update]) Get(x, y int) value {
 		}
 		st.fix(i, l, r)
 		if x <= l && r <= y {
-			valPtr := &st.arr[i].value
+			valPtr := st.arr[i].value
 			if first {
 				first = false
-				ret = *valPtr
+				ret = valPtr
 			} else {
-				ret = st.merge(&ret, valPtr)
+				ret = st.merge(ret, valPtr)
 			}
 			return
 		}
@@ -134,24 +143,24 @@ func (st *ST[value, update]) Get(x, y int) value {
 	for j := 2*i + 1; ; {
 		st.fix(j, l_, r_)
 		if x <= l_ {
-			valPtr := &st.arr[j].value
+			valPtr := st.arr[j].value
 			if first {
 				first = false
-				ret = *valPtr
+				ret = valPtr
 			} else {
-				ret = st.merge(valPtr, &ret)
+				ret = st.merge(valPtr, ret)
 			}
 			break
 		}
 		mid_ := (l_ + r_) / 2
 		if x <= mid_ {
 			st.fix(2*j+2, mid_+1, r_)
-			valPtr := &st.arr[2*j+2].value
+			valPtr := st.arr[2*j+2].value
 			if first {
 				first = false
-				ret = *valPtr
+				ret = valPtr
 			} else {
-				ret = st.merge(valPtr, &ret)
+				ret = st.merge(valPtr, ret)
 			}
 			j = 2*j + 1
 			r_ = mid_
@@ -187,9 +196,46 @@ func (st *ST[value, update]) Set(x int, v value) {
 			st.fix(2*i+1, l, mid)
 			rec(2*i+2, mid+1, r)
 		}
-		st.arr[i].value = st.merge(&st.arr[2*i+1].value, &st.arr[2*i+2].value)
+		st.arr[i].value = st.merge(st.arr[2*i+1].value, st.arr[2*i+2].value)
 	}
 	rec(0, 0, st.size-1)
+}
+
+// returns highest bound x such that predicate is true for [x,y]
+func (st *ST[value, update]) BinarySearchOnLeftIndex(y int, predicate func(value) bool) (int, bool) {
+	if y < 0 || y >= st.size {
+		panic("invalid y")
+	}
+	var zeroValue value
+
+	var rec func(i, l, r int, valueToRight value) (int, value, bool)
+	rec = func(i, l, r int, valueToRight value) (int, value, bool) {
+		st.fix(i, l, r)
+		var combined value
+		if r == y {
+			combined = st.arr[i].value
+		} else {
+			combined = st.merge(st.arr[i].value, valueToRight)
+		}
+		if !predicate(combined) {
+			return -1, combined, false
+		}
+		if l == r {
+			return l, zeroValue, true
+		}
+		mid := (l + r) / 2
+		if y <= mid {
+			return rec(2*i+1, l, mid, zeroValue)
+		}
+		x, value, ok := rec(2*i+2, mid+1, r, valueToRight)
+		if ok {
+			return x, zeroValue, true
+		} else {
+			return rec(2*i+1, l, mid, value)
+		}
+	}
+	i, _, ok := rec(0, 0, st.size-1, zeroValue)
+	return i, ok
 }
 
 func (st *ST[value, update]) Update(x, y int, v update) {
@@ -200,14 +246,14 @@ func (st *ST[value, update]) Update(x, y int, v update) {
 			return
 		}
 		if x <= l && r <= y {
-			st.push(&v, &st.arr[i].update)
+			st.push(v, &st.arr[i].update)
 			st.fix(i, l, r)
 			return
 		}
 		mid := (l + r) / 2
 		rec(2*i+1, l, mid)
 		rec(2*i+2, mid+1, r)
-		st.arr[i].value = st.merge(&st.arr[2*i+1].value, &st.arr[2*i+2].value)
+		st.arr[i].value = st.merge(st.arr[2*i+1].value, st.arr[2*i+2].value)
 	}
 	rec(0, 0, st.size-1)
 }

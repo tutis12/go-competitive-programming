@@ -2,6 +2,7 @@ package main
 
 import (
 	"main/fastio"
+	"main/segment_tree"
 )
 
 func solve(
@@ -14,146 +15,160 @@ func solve(
 	}
 }
 
-const log = 18
-
 func solveTest(
 	stdin *fastio.Reader,
 	stdout *fastio.Writer,
 ) {
-	n, z := stdin.Uint32_2()
-	x := stdin.Uint32s(int(n))
+	n := stdin.Int()
+	a := stdin.Ints(n, 1)
+	adj := make([][]int, n+1)
+	for range n - 1 {
+		u, v := stdin.Int2()
+		adj[u] = append(adj[u], v)
+		adj[v] = append(adj[v], u)
+	}
+
+	from := make([]int, n+1)
+	to := make([]int, n+1)
+	ordered := make([]int, n*2)
+	var rec func(v, p int)
+	inc := 0
+	rec = func(v, p int) {
+		if a[v] == 0 {
+			ordered[inc] = 0
+		} else {
+			ordered[inc] = 2
+		}
+		from[v] = inc
+		inc++
+		for _, u := range adj[v] {
+			if u == p {
+				continue
+			}
+			rec(u, v)
+		}
+		if a[v] == 0 {
+			ordered[inc] = 1
+		} else {
+			ordered[inc] = 3
+		}
+		to[v] = inc
+		inc++
+	}
+	rec(1, -1)
+
+	type seqCount struct {
+		max01      int32
+		max10_diff int8
+	}
+
+	type stValue struct {
+		counter01 seqCount
+		counter23 seqCount
+	}
+	type stUpdate struct {
+		swap bool
+	}
+
+	merge := func(a, b seqCount) seqCount {
+		var max_01 int8
+		var max_10 int8
+		if a.max01%2 != 0 {
+			max_01 = b.max10_diff
+		}
+
+		if (a.max10_diff%2 == 0) == (a.max01%2 == 0) {
+			max_10 = int8(b.max10_diff)
+		}
+
+		return seqCount{
+			max01:      int32(max_01) + a.max01 + b.max01,
+			max10_diff: max_10 + a.max10_diff - max_01,
+		}
+	}
+
+	st := segment_tree.NewLazyST(
+		func(i int) stValue {
+			return stValue{
+				counter01: seqCount{
+					max01:      int32(CastBool(ordered[i] == 0)),
+					max10_diff: int8(CastBool(ordered[i] == 1) - CastBool(ordered[i] == 0)),
+				},
+				counter23: seqCount{
+					max01:      int32(CastBool(ordered[i] == 2)),
+					max10_diff: int8(CastBool(ordered[i] == 3) - CastBool(ordered[i] == 2)),
+				},
+			}
+		},
+		2*n,
+		stUpdate{},
+		func(a, b stValue) stValue {
+			return stValue{
+				counter01: merge(a.counter01, b.counter01),
+				counter23: merge(a.counter23, b.counter23),
+			}
+		},
+		func(update stUpdate, value *stValue) {
+			if update.swap {
+				value.counter01, value.counter23 = value.counter23, value.counter01
+			}
+		},
+		func(top stUpdate, being_updated *stUpdate) {
+			being_updated.swap = being_updated.swap != top.swap
+		},
+	)
+
+	stdout.Int(int(st.Total().counter23.max01/2), '\n')
+
 	q := stdin.Int()
-	jump := [log][]uint32{}
-	for i := range log {
-		jump[i] = make([]uint32, n+1)
-	}
-	jump[0][n] = n
-	{
-		j := uint32(1)
-		for i := range n {
-			for j < n && x[j]-x[i] <= z {
-				j++
-			}
-			jump[0][i] = j
-		}
-	}
-
-	for j := 1; j < log; j++ {
-		for i := range n + 1 {
-			jump[j][i] = jump[j-1][jump[j-1][i]]
-		}
-	}
-
-	type big struct {
-		pos   uint32
-		jumps uint32
-	}
-	jumpBig := [log][]big{}
-	for i := range log {
-		jumpBig[i] = make([]big, n+1)
-	}
-	for pos := range n {
-		i := pos
-		j := i + 1
-		cnt := uint32(1)
-		for t := log - 1; t >= 0; t-- {
-			i1 := jump[t][i]
-			i2 := jump[t][j]
-			i3 := jump[0][i1]
-			if i1 != i2 && i2 != i3 {
-				i, j = i1, i2
-				cnt += 1 << (t + 1)
-			}
-		}
-
-		{
-			k := jump[0][i]
-
-			if k != j {
-				cnt++
-				k1 := jump[0][j]
-				_, j = j, k
-
-				{
-					k := k1
-					if k != j {
-						cnt++
-						_, j = j, k
-
-						{
-							k := jump[1][i]
-							if k != j {
-								cnt++
-								_, j = j, k
-							}
-						}
-
-					}
-				}
-
-			}
-		}
-
-		jumpBig[0][pos] = big{j, cnt}
-	}
-	jumpBig[0][n] = big{n, 0}
-	for j := 1; j < log; j++ {
-		for i := range n + 1 {
-			b1 := jumpBig[j-1][i]
-			b2 := jumpBig[j-1][b1.pos]
-			jumpBig[j][i] = big{b2.pos, b1.jumps + b2.jumps}
-		}
-	}
 	for range q {
-		l, r := stdin.Uint32_2()
-		l--
-		r--
-
-		i := l
-
-		cnt := uint32(1)
-		for t := log - 1; t >= 0; t-- {
-			b := jumpBig[t][i]
-			if b.pos <= r {
-				i = b.pos
-				cnt += b.jumps
-			}
-		}
-
-		j := i + 1
-		for t := log - 1; t >= 0; t-- {
-			i1 := jump[t][i]
-			i2 := jump[t][j]
-			i3 := jump[0][i1]
-			if i1 != i2 && i2 != i3 && i2 <= r {
-				i, j = i1, i2
-				cnt += 1 << (t + 1)
-			}
-		}
-		if j <= r {
-			cnt++
-			k := jump[0][i]
-			j0 := j
-			if k == j {
-				_, j = j, j+1
-			} else {
-				_, j = j, k
-			}
-
-			if j <= r {
-				cnt++
-				k := jump[0][j0]
-				if k == j {
-					_, j = j, j+1
-				} else {
-					_, j = j, k
-				}
-
-				if j <= r {
-					cnt++
-				}
-			}
-		}
-		stdout.Uint32(cnt, '\n')
+		v := stdin.Int()
+		st.Update(from[v], to[v], stUpdate{swap: true})
+		stdout.Int(int(st.Total().counter23.max01/2), '\n')
 	}
 }
+
+/*input
+2
+7
+0 1 0 1 1 0 0
+1 6
+1 7
+7 3
+3 2
+7 5
+5 4
+4
+2
+4
+6
+7
+2
+0 1
+1 2
+2
+2
+1
+
+*/
+
+/*output
+2
+1
+1
+2
+3
+1
+0
+1
+
+
+*/
+
+/*
+
+
+(x(y(z))(t)(w))
+
+
+*/

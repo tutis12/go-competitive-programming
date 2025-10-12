@@ -1,6 +1,7 @@
 package fastio
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 )
@@ -92,6 +93,10 @@ func (w *Writer) Uint(n uint, c byte) {
 		i--
 	}
 	w.bytes(w.intBuffer[i+1:])
+}
+
+func (w *Writer) Fprintf(format string, a ...any) {
+	w.String(fmt.Sprintf(format, a...))
 }
 
 func (w *Writer) Uint32(n uint32, c byte) {

@@ -121,7 +121,7 @@ func TestMergeEverything(*testing.T) {
 		}
 		totalFile += packageFile
 	}
-	file, err := os.Create("generated_main.go")
+	file, err := os.Create("generated_main.txt")
 	if err != nil {
 		panic(err.Error())
 	}
