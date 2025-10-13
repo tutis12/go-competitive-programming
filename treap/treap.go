@@ -51,16 +51,18 @@ func (c *Controller[V]) GetI(x *Node[V], i int) (*Node[V], bool) {
 }
 
 func (c *Controller[V]) Contains(x *Node[V], ctx *V) bool {
+	var lastR *Node[V]
 	for x != nil {
 		c.Push(x)
 		if c.Less(ctx, &x.Value) {
 			x = x.C[0]
 		} else {
-			if !c.Less(&x.Value, ctx) {
-				return true
-			}
+			lastR = x
 			x = x.C[1]
 		}
+	}
+	if lastR != nil && !c.Less(&lastR.Value, ctx) {
+		return true
 	}
 	return false
 }
