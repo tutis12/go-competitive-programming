@@ -10,6 +10,8 @@ import (
 	"golang.org/x/tools/imports"
 )
 
+const generated_file_name = "output/generated_main.go"
+
 type fileInfo struct {
 	pkg     string
 	content string
@@ -103,16 +105,20 @@ func TestMergeEverything(*testing.T) {
 		first := usedPackages[0]
 		usedPackages = usedPackages[1:]
 		packageFile := ""
+		filesTotal := ""
 		for _, file := range files {
 			if file.pkg == first {
 				packageFile += "//package " + first + "\n"
 				packageFile += "//file " + file.name + "\n"
 				packageFile += file.content
+				filesTotal += file.content + "\n"
 			}
 		}
+
 		for pkg := range packages {
-			if strings.Contains(packageFile, pkg+".") {
+			if strings.Contains(filesTotal, pkg+".") {
 				if !toSkip[pkg] {
+					fmt.Printf("adding package %s because used in %s\n", pkg, first)
 					usedPackages = append(usedPackages, pkg)
 					toSkip[pkg] = true
 				}
@@ -121,12 +127,33 @@ func TestMergeEverything(*testing.T) {
 		}
 		totalFile += packageFile
 	}
-	file, err := os.Create("generated_main.txt")
+	file, err := os.Create(generated_file_name)
 	if err != nil {
 		panic(err.Error())
 	}
 
 	src := []byte(totalFile)
+
+	src, err = format.Source(src)
+	if err != nil {
+		fmt.Fprintln(file, totalFile)
+		err1 := file.Sync()
+		if err1 != nil {
+			panic(err1.Error())
+		}
+		panic(err.Error())
+	}
+
+	// Use goimports to format and remove unused imports
+	src, err = imports.Process("", src, nil)
+	if err != nil {
+		fmt.Println("Error formatting:", err)
+		return
+	}
+
+	src = RemoveGenerics(src)
+
+	src = RemoveUnusedCode(src)
 
 	src, err = format.Source(src)
 	if err != nil {

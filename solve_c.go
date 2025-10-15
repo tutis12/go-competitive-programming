@@ -2,10 +2,11 @@ package main
 
 import (
 	"main/fastio"
-	"main/segment_tree"
+	"main/segment_tree_iter"
+	"math"
 )
 
-// var solveX = solveC
+var solveX = solveC
 
 func solveC(
 	stdin *fastio.Reader,
@@ -17,20 +18,34 @@ func solveC(
 	}
 }
 
+type stValue struct {
+	minA  int
+	minDP int
+}
+
+type lazy struct {
+	addDP int
+}
+
+func (a stValue) Merge(b stValue) stValue {
+	return stValue{minA: min(a.minA, b.minA), minDP: min(a.minDP, b.minDP)}
+}
+
+func (up lazy) ApplyUpdate(val *stValue) {
+	val.minDP += up.addDP
+}
+
+func (top lazy) Push(existing *lazy) {
+	existing.addDP += top.addDP
+}
+
 func solveTestC(
 	stdin *fastio.Reader,
 	stdout *fastio.Writer,
 ) {
 	n := stdin.Int()
 	a := stdin.Ints(n, 0)
-	type stValue struct {
-		minA  int
-		minDP int
-	}
-	type lazy struct {
-		addDP int
-	}
-	st := segment_tree.NewLazyST(
+	st := segment_tree_iter.NewST(
 		func(i int) stValue {
 			return stValue{
 				minA:  a[i],
@@ -38,34 +53,21 @@ func solveTestC(
 			}
 		},
 		n,
+		stValue{
+			minA:  math.MaxInt,
+			minDP: math.MaxInt,
+		},
 		lazy{},
-		func(a, b stValue) stValue {
-			return stValue{
-				minA:  min(a.minA, b.minA),
-				minDP: min(a.minDP, b.minDP),
-			}
-		},
-		func(lazy lazy, val *stValue) {
-			val.minDP += lazy.addDP
-		},
-		func(top lazy, being_updated *lazy) {
-			being_updated.addDP += top.addDP
-		},
 	)
 
 	dp := make([]int, n)
 
 	for i, ai := range a {
 		dp[i] = i + 1
-		for cost := 1; cost <= 4; cost++ {
-			l, ok := st.BinarySearchOnLeftIndex(i, func(x stValue) bool {
-				return x.minA*cost < ai
+		for cost := 1; cost <= 3; cost++ {
+			l, _ := st.LongestRangeWherePredicate(i, func(x stValue) bool {
+				return x.minA*cost >= ai
 			})
-			if !ok {
-				l = 0
-			} else {
-				l++
-			}
 			var total int
 			if l == 0 {
 				total = cost
@@ -74,7 +76,10 @@ func solveTestC(
 			}
 			dp[i] = min(dp[i], total)
 		}
-		st.Update(i, i, lazy{addDP: dp[i]})
+		st.SetValue(i, stValue{
+			minA:  ai,
+			minDP: dp[i],
+		})
 	}
 	stdout.Int(dp[n-1], '\n')
 }

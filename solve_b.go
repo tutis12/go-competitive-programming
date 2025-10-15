@@ -4,7 +4,7 @@ import (
 	"main/fastio"
 )
 
-var solveX = solveB
+//var solveX = solveB
 
 func solveB(
 	stdin *fastio.Reader,
