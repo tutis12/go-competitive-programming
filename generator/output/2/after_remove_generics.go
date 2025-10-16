@@ -500,6 +500,39 @@ func solveTestG(
 /*output
 
  */
+//package segment_tree_iter
+//file ..//segment_tree_iter/go
+
+
+
+
+
+
+
+/*
+n = 16 log2n = 4
+
+0 |  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1
+1 |  2  2  2  2  2  2  2  2  3  3  3  3  3  3  3  3
+2 |  4  4  4  4  5  5  5  5  6  6  6  6  7  7  7  7
+3 |  8  8  9  9 10 10 11 11 12 12 13 13 14 14 15 15
+4 | 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+
+	[0 ... val(i) ... size-1] [size ... zero ... n]
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
 //package fastio
 //file ..//fastio/reader.go
 
@@ -896,39 +929,6 @@ type Hasher interface {
 
 
 
-//package segment_tree_iter
-//file ..//segment_tree_iter/go
-
-
-
-
-
-
-
-/*
-n = 16 log2n = 4
-
-0 |  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1
-1 |  2  2  2  2  2  2  2  2  3  3  3  3  3  3  3  3
-2 |  4  4  4  4  5  5  5  5  6  6  6  6  7  7  7  7
-3 |  8  8  9  9 10 10 11 11 12 12 13 13 14 14 15 15
-4 | 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-
-	[0 ... val(i) ... size-1] [size ... zero ... n]
-*/
-
-
-
-
-
-
-
-
-
-
-
-
-
 //package debug
 //file ..//debug/go
 
@@ -1021,94 +1021,6 @@ type nodeG1 struct { value stValue
 update lazy
  }
 // ---- Concrete Methods (Generated) ----
-func (hm *HashMapG1) Hash(key int) uint64 {
-	hash := (*(*intHash)(unsafe.Pointer(&key))).Hash()
-	hash *= hm.oddSalt
-	hash = ReverseBits64(hash)
-	return hash
-}
-func (hm *HashMapG1) Get(key int) int {
-	hash := hm.Hash(key)
-	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
-		if e.hash == hash && e.key == key {
-			return e.value
-		}
-	}
-	var zero int
-	return zero
-}
-func (hm *HashMapG1) Get2(key int) (int, bool) {
-	hash := hm.Hash(key)
-	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
-		if e.hash == hash && e.key == key {
-			return e.value, true
-		}
-	}
-	var zero int
-	return zero, false
-}
-func (hm *HashMapG1) Delete(key int) bool {
-	hash := hm.Hash(key)
-	index := hash % (1 << hm.logSize)
-	buckets := hm.buckets[index]
-	for i := range buckets {
-		e := &buckets[i]
-		if e.hash == hash && e.key == key {
-			buckets[i] = buckets[len(buckets)-1]
-			hm.buckets[index] = buckets[:len(buckets)-1]
-			hm.size--
-			return true
-		}
-	}
-	return false
-}
-func (hm *HashMapG1) Set(key int, value int) {
-	hash := hm.Hash(key)
-	index := hash % (1 << hm.logSize)
-	buckets := hm.buckets[index]
-	for i := range buckets {
-		e := &buckets[i]
-		if e.hash == hash && e.key == key {
-			e.value = value
-			return
-		}
-	}
-	hm.buckets[index] = append(buckets, entryG1{
-		hash:	hash,
-		key:	key,
-		value:	value,
-	})
-	hm.size++
-	if hm.size*4 > (1<<hm.logSize)*3 {
-		hm.resize()
-	}
-}
-func (hm *HashMapG1) resize() {
-	hm.buckets = append(hm.buckets, make([][]entryG1, 1<<hm.logSize)...)
-	for i, bucket := range hm.buckets[:1<<hm.logSize] {
-		cntMove := 0
-		for i := 0; i < len(bucket)-cntMove; {
-			e := bucket[i]
-			if e.hash&(1<<hm.logSize) != 0 {
-				j := len(bucket) - 1 - cntMove
-				bucket[i], bucket[j] = bucket[j], bucket[i]
-				cntMove++
-			} else {
-				i++
-			}
-		}
-		odds := bucket[len(bucket)-cntMove:]
-		evens := bucket[:len(bucket)-cntMove]
-		if len(odds) <= len(evens) {
-			odds = slices.Clone(odds)
-		} else {
-			evens = slices.Clone(evens)
-		}
-		hm.buckets[i+(1<<hm.logSize)] = odds
-		hm.buckets[i] = evens
-	}
-	hm.logSize++
-}
 func (st STG1) SetValue(
 	i int,
 	val stValue,
@@ -1265,32 +1177,95 @@ func (st STG1) rebuild(
 		i = i / 2
 	}
 }
+func (hm *HashMapG1) Hash(key int) uint64 {
+	hash := (*(*intHash)(unsafe.Pointer(&key))).Hash()
+	hash *= hm.oddSalt
+	hash = ReverseBits64(hash)
+	return hash
+}
+func (hm *HashMapG1) Get(key int) int {
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if e.hash == hash && e.key == key {
+			return e.value
+		}
+	}
+	var zero int
+	return zero
+}
+func (hm *HashMapG1) Get2(key int) (int, bool) {
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if e.hash == hash && e.key == key {
+			return e.value, true
+		}
+	}
+	var zero int
+	return zero, false
+}
+func (hm *HashMapG1) Delete(key int) bool {
+	hash := hm.Hash(key)
+	index := hash % (1 << hm.logSize)
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if e.hash == hash && e.key == key {
+			buckets[i] = buckets[len(buckets)-1]
+			hm.buckets[index] = buckets[:len(buckets)-1]
+			hm.size--
+			return true
+		}
+	}
+	return false
+}
+func (hm *HashMapG1) Set(key int, value int) {
+	hash := hm.Hash(key)
+	index := hash % (1 << hm.logSize)
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if e.hash == hash && e.key == key {
+			e.value = value
+			return
+		}
+	}
+	hm.buckets[index] = append(buckets, entryG1{
+		hash:	hash,
+		key:	key,
+		value:	value,
+	})
+	hm.size++
+	if hm.size*4 > (1<<hm.logSize)*3 {
+		hm.resize()
+	}
+}
+func (hm *HashMapG1) resize() {
+	hm.buckets = append(hm.buckets, make([][]entryG1, 1<<hm.logSize)...)
+	for i, bucket := range hm.buckets[:1<<hm.logSize] {
+		cntMove := 0
+		for i := 0; i < len(bucket)-cntMove; {
+			e := bucket[i]
+			if e.hash&(1<<hm.logSize) != 0 {
+				j := len(bucket) - 1 - cntMove
+				bucket[i], bucket[j] = bucket[j], bucket[i]
+				cntMove++
+			} else {
+				i++
+			}
+		}
+		odds := bucket[len(bucket)-cntMove:]
+		evens := bucket[:len(bucket)-cntMove]
+		if len(odds) <= len(evens) {
+			odds = slices.Clone(odds)
+		} else {
+			evens = slices.Clone(evens)
+		}
+		hm.buckets[i+(1<<hm.logSize)] = odds
+		hm.buckets[i] = evens
+	}
+	hm.logSize++
+}
 // ---- Concrete Generic Functions (Generated) ----
-func Log2CeilG1(x int) int {
-	x64 := uint64(x)
-	if x64 == 0 {
-		panic("Log2(0) is undefined")
-	}
-	if x64 == 1 {
-		return 0
-	}
-	return 1 + Log2FloorG1(x64-1)
-}
-func IsPowerOf2G1(x int) bool {
-	x64 := uint64(x)
-	return x64 != 0 && (x64&(x64-1)) == 0
-}
-func NewHashMapG1(
-	size int,
-) *HashMapG1 {
-	logSize := Log2CeilG1(size + 1)
-	return &HashMapG1{
-		buckets:	make([][]entryG1, 1<<logSize),
-		logSize:	logSize,
-		size:		0,
-		oddSalt:	rand.Uint64() | 1,
-	}
-}
 func NewSTG1(
 	init func(int) stValue,
 	size int,
@@ -1320,11 +1295,43 @@ func NewSTG1(
 		zeroUpdate:	zeroUpdate,
 	}
 }
+func NewHashMapG1(
+	size int,
+) *HashMapG1 {
+	logSize := Log2CeilG1(size + 1)
+	return &HashMapG1{
+		buckets:	make([][]entryG1, 1<<logSize),
+		logSize:	logSize,
+		size:		0,
+		oddSalt:	rand.Uint64() | 1,
+	}
+}
 func Log2FloorG1(x uint64) int {
 	x64 := uint64(x)
 	if x64 == 0 {
 		panic("Log2(0) is undefined")
 	}
 	return 63 - bits.LeadingZeros64(x64)
+}
+func Log2FloorG2(x int) int {
+	x64 := uint64(x)
+	if x64 == 0 {
+		panic("Log2(0) is undefined")
+	}
+	return 63 - bits.LeadingZeros64(x64)
+}
+func Log2CeilG1(x int) int {
+	x64 := uint64(x)
+	if x64 == 0 {
+		panic("Log2(0) is undefined")
+	}
+	if x64 == 1 {
+		return 0
+	}
+	return 1 + Log2FloorG1(x64-1)
+}
+func IsPowerOf2G1(x int) bool {
+	x64 := uint64(x)
+	return x64 != 0 && (x64&(x64-1)) == 0
 }
 

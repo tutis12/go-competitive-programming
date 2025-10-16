@@ -1305,28 +1305,31 @@ func RemoveGenerics(src []byte) []byte {
 					callPattern := otherFnName + "("
 					if strings.Contains(funcBody, callPattern) {
 						// Found a call to another generic function - try to infer its type signature
-						// Use specific knowledge about function patterns
-						var depSig string
+						var depSigs []string
 						if fnName == "Log2Ceil" && otherFnName == "Log2Floor" {
 							// Log2Ceil always converts to uint64 and calls Log2Floor with uint64
-							depSig = "uint64"
+							// But we need both int and uint64 versions of Log2Floor since they might be called directly elsewhere
+							depSigs = append(depSigs, "uint64") // All Log2Ceil versions call uint64 version of Log2Floor
+							depSigs = append(depSigs, "int")    // Generate int version of Log2Floor in case it's needed elsewhere
 						} else if (fnName == "NewHashMap" || fnName == "NewST") && otherFnName == "Log2Ceil" {
 							// Constructor functions typically call Log2Ceil with int size arguments
-							depSig = "int"
+							depSigs = append(depSigs, "int")
 						} else if otherFnName == "IsPowerOf2" {
 							// IsPowerOf2 is typically called with int arguments in control flow
-							depSig = "int"
+							depSigs = append(depSigs, "int")
 						} else if len(parts) > 0 {
 							// Default heuristic: use same signature as calling function
-							depSig = parts[0]
+							depSigs = append(depSigs, parts[0])
 						}
 
-						if depSig != "" {
-							key := otherFnName + "[" + depSig + "]"
-							if _, exists := seenInst[key]; !exists {
-								seenInst[key] = struct{}{}
-								insts[otherFnName] = append(insts[otherFnName], depSig)
-								newDeps = true
+						for _, depSig := range depSigs {
+							if depSig != "" {
+								key := otherFnName + "[" + depSig + "]"
+								if _, exists := seenInst[key]; !exists {
+									seenInst[key] = struct{}{}
+									insts[otherFnName] = append(insts[otherFnName], depSig)
+									newDeps = true
+								}
 							}
 						}
 					}
@@ -1388,10 +1391,16 @@ func RemoveGenerics(src []byte) []byte {
 				// For specific known patterns, use smarter replacement
 				if depFnName == "Log2Floor" && name == "Log2Ceil" {
 					// Log2Ceil functions convert input to uint64, so Log2Floor calls should use uint64 version
-					if len(insts[depFnName]) >= 2 {
-						// Use G2 (uint64 version) if available
-						depConcrete := fmt.Sprintf(genericNameFormat, depFnName, 2)
-						clone = strings.ReplaceAll(clone, depFnName+"(", depConcrete+"(")
+					// Find the uint64 version of Log2Floor
+					var uint64Version string
+					for idx, depSig := range insts[depFnName] {
+						if depSig == "uint64" {
+							uint64Version = fmt.Sprintf(genericNameFormat, depFnName, idx+1)
+							break
+						}
+					}
+					if uint64Version != "" {
+						clone = strings.ReplaceAll(clone, depFnName+"(", uint64Version+"(")
 						continue
 					}
 				}
