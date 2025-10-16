@@ -2,6 +2,7 @@ package main
 
 import (
 	"main/fastio"
+	"main/hash_map"
 	"main/segment_tree_iter"
 	"math"
 )
@@ -39,16 +40,25 @@ func (top lazy) Push(existing *lazy) {
 	existing.addDP += top.addDP
 }
 
+type intHash int
+
+func (h intHash) Hash() uint64 {
+	return uint64(h)
+}
+
 func solveTestC(
 	stdin *fastio.Reader,
 	stdout *fastio.Writer,
 ) {
 	n := stdin.Int()
-	a := stdin.Ints(n, 0)
+	a := hash_map.NewHashMap[int, intHash, int](n)
+	for i := range n {
+		a.Set(i, stdin.Int())
+	}
 	st := segment_tree_iter.NewST(
 		func(i int) stValue {
 			return stValue{
-				minA:  a[i],
+				minA:  a.Get(i),
 				minDP: 0,
 			}
 		},
@@ -60,10 +70,11 @@ func solveTestC(
 		lazy{},
 	)
 
-	dp := make([]int, n)
+	dp := hash_map.NewHashMap[int, intHash, int](n)
 
-	for i, ai := range a {
-		dp[i] = i + 1
+	for i := range n {
+		ai := a.Get(i)
+		dp.Set(i, i+1)
 		for cost := 1; cost <= 3; cost++ {
 			l, _ := st.LongestRangeWherePredicate(i, func(x stValue) bool {
 				return x.minA*cost >= ai
@@ -74,14 +85,14 @@ func solveTestC(
 			} else {
 				total = st.Get(l-1, i-1).minDP + cost
 			}
-			dp[i] = min(dp[i], total)
+			dp.Set(i, min(dp.Get(i), total))
 		}
 		st.SetValue(i, stValue{
 			minA:  ai,
-			minDP: dp[i],
+			minDP: dp.Get(i),
 		})
 	}
-	stdout.Int(dp[n-1], '\n')
+	stdout.Int(dp.Get(n-1), '\n')
 }
 
 /*input

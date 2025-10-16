@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"unsafe"
 )
 
 func main() {
@@ -613,7 +614,7 @@ func (h intHash) Hash() uint64 {
 }
 
 func (hm *HashMapG1) Hash(key int) uint64 {
-	hash := intHash(key).Hash()
+	hash := (*(*intHash)(unsafe.Pointer(&key))).Hash()
 	hash *= hm.oddSalt
 	hash = ReverseBits64(hash)
 	return hash

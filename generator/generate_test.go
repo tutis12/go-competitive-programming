@@ -2,12 +2,9 @@ package main
 
 import (
 	"fmt"
-	"go/format"
 	"os"
 	"strings"
 	"testing"
-
-	"golang.org/x/tools/imports"
 )
 
 const generated_file_name = "output/generated_main.go"
@@ -134,7 +131,7 @@ func TestMergeEverything(*testing.T) {
 
 	src := []byte(totalFile)
 
-	src, err = format.Source(src)
+	src, err = sanitizeCode(src)
 	if err != nil {
 		fmt.Fprintln(file, totalFile)
 		err1 := file.Sync()
@@ -144,18 +141,41 @@ func TestMergeEverything(*testing.T) {
 		panic(err.Error())
 	}
 
-	// Use goimports to format and remove unused imports
-	src, err = imports.Process("", src, nil)
-	if err != nil {
-		fmt.Println("Error formatting:", err)
-		return
+	// DEBUG: Save file before RemoveGenerics
+	os.MkdirAll("output/1", 0755)
+	debugFile1, err := os.Create("output/1/before_remove_generics.go")
+	if err == nil {
+		fmt.Fprintln(debugFile1, string(src))
+		debugFile1.Close()
 	}
 
 	src = RemoveGenerics(src)
 
-	src = RemoveUnusedCode(src)
+	// DEBUG: Save file after RemoveGenerics
+	os.MkdirAll("output/2", 0755)
+	debugFile2, err := os.Create("output/2/after_remove_generics.go")
+	if err == nil {
+		fmt.Fprintln(debugFile2, string(src))
+		debugFile2.Close()
+	}
 
-	src, err = format.Source(src)
+	src = RemoveUnusedCode(src)
+	src, err = sanitizeCode(src)
+	if err != nil {
+		panic(err)
+	}
+
+	// DEBUG: Save file after RemoveUnusedCode
+	os.MkdirAll("output/3", 0755)
+	debugFile3, err := os.Create("output/3/after_remove_unused.go")
+	if err == nil {
+		fmt.Fprintln(debugFile3, string(src))
+		debugFile3.Close()
+	}
+
+	src = RemoveUnsafeCasts(src)
+
+	src, err = sanitizeCode(src)
 	if err != nil {
 		fmt.Fprintln(file, totalFile)
 		err1 := file.Sync()
@@ -165,11 +185,12 @@ func TestMergeEverything(*testing.T) {
 		panic(err.Error())
 	}
 
-	// Use goimports to format and remove unused imports
-	src, err = imports.Process("", src, nil)
-	if err != nil {
-		fmt.Println("Error formatting:", err)
-		return
+	// DEBUG: Save final processed file
+	os.MkdirAll("output/4", 0755)
+	debugFile4, err := os.Create("output/4/final_processed.go")
+	if err == nil {
+		fmt.Fprintln(debugFile4, string(src))
+		debugFile4.Close()
 	}
 
 	fmt.Fprintln(file, string(src))

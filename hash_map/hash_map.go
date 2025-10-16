@@ -4,6 +4,7 @@ import (
 	"main/utils"
 	"math/rand/v2"
 	"slices"
+	"unsafe"
 )
 
 type entry[K comparable, V any] struct {
@@ -12,36 +13,48 @@ type entry[K comparable, V any] struct {
 	value V
 }
 
-type HashMap[K comparable, V any] struct {
+type Hasher interface {
+	Hash() uint64
+}
+
+type HashMap[K comparable, H Hasher, V any] struct {
 	buckets [][]entry[K, V]
 	logSize int
 	size    int
-	hasher  func(K) uint64
 	oddSalt uint64
 }
 
-func NewHashMap[K comparable, V any](
+func NewHashMap[K comparable, H Hasher, V any](
 	size int,
-	hasher func(K) uint64,
-) *HashMap[K, V] {
+) *HashMap[K, H, V] {
 	logSize := utils.Log2Ceil(size + 1)
-	return &HashMap[K, V]{
+	return &HashMap[K, H, V]{
 		buckets: make([][]entry[K, V], 1<<logSize),
 		logSize: logSize,
 		size:    0,
-		hasher:  hasher,
 		oddSalt: rand.Uint64() | 1,
 	}
 }
 
-func (hm *HashMap[K, V]) Hash(key K) uint64 {
-	hash := hm.hasher(key)
+func (hm *HashMap[K, H, V]) Hash(key K) uint64 {
+	hash := (*(*H)(unsafe.Pointer(&key))).Hash()
 	hash *= hm.oddSalt
 	hash = utils.ReverseBits64(hash)
 	return hash
 }
 
-func (hm *HashMap[K, V]) Get(key K) (V, bool) {
+func (hm *HashMap[K, H, V]) Get(key K) V {
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if e.hash == hash && e.key == key {
+			return e.value
+		}
+	}
+	var zero V
+	return zero
+}
+
+func (hm *HashMap[K, H, V]) Get2(key K) (V, bool) {
 	hash := hm.Hash(key)
 	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
 		if e.hash == hash && e.key == key {
@@ -52,7 +65,7 @@ func (hm *HashMap[K, V]) Get(key K) (V, bool) {
 	return zero, false
 }
 
-func (hm *HashMap[K, V]) Delete(key K) bool {
+func (hm *HashMap[K, H, V]) Delete(key K) bool {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
 	buckets := hm.buckets[index]
@@ -68,7 +81,7 @@ func (hm *HashMap[K, V]) Delete(key K) bool {
 	return false
 }
 
-func (hm *HashMap[K, V]) Set(key K, value V) {
+func (hm *HashMap[K, H, V]) Set(key K, value V) {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
 	buckets := hm.buckets[index]
@@ -90,7 +103,7 @@ func (hm *HashMap[K, V]) Set(key K, value V) {
 	}
 }
 
-func (hm *HashMap[K, V]) resize() {
+func (hm *HashMap[K, H, V]) resize() {
 	hm.buckets = append(hm.buckets, make([][]entry[K, V], 1<<hm.logSize)...)
 	for i, bucket := range hm.buckets[:1<<hm.logSize] {
 		cntMove := 0

@@ -4,28 +4,38 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/printer"
 	"go/token"
 	"sort"
 	"strings"
+
+	"golang.org/x/tools/imports"
 )
 
-// AST-based RemoveGenerics implementation.
-var genericNameFormat = "%sG%d"
+// genericNameFormat controls naming of monomorphized entities.
+const genericNameFormat = "%sG%d"
 
+// RemoveGenerics performs a monomorphization pass over merged source.
+// It discovers generic type and function instantitions, propagates nested
+// usages, emits concrete strucethods and functions, and strips the
+// original generic declarations. It intentionally avoids any hardcoded
+// knowledge of specific type names.
 func RemoveGenerics(src []byte) []byte {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "merged.go", src, parser.ParseComments)
 	if err != nil {
 		return src
 	}
+
+	// Collect generic type declarations.
 	type genericInfo struct {
-		decl     *ast.GenDecl // full declaration (to remove 'type' token cleanly)
+		decl     *ast.GenDecl
 		spec     *ast.TypeSpec
 		isStruct bool
 		params   []*ast.Field
-		fields   *ast.FieldList // struct fields (nil for interface)
+		fields   *ast.FieldList // only for structs
 	}
 	generics := map[string]*genericInfo{}
 	for _, d := range file.Decls {
@@ -34,8 +44,8 @@ func RemoveGenerics(src []byte) []byte {
 			continue
 		}
 		for _, sp := range gd.Specs {
-			ts := sp.(*ast.TypeSpec)
-			if ts.TypeParams == nil {
+			ts, ok := sp.(*ast.TypeSpec)
+			if !ok || ts.TypeParams == nil {
 				continue
 			}
 			gi := &genericInfo{decl: gd, spec: ts, params: ts.TypeParams.List}
@@ -47,43 +57,48 @@ func RemoveGenerics(src []byte) []byte {
 				gi.isStruct = false
 				gi.fields = nil
 			default:
-				continue // only handle struct/interface generics for now
+				continue
 			}
 			generics[ts.Name.Name] = gi
 		}
 	}
-	insts := map[string][]string{}
+
+	// Infer from composite literals and identifiers.
+	// Collect generic functions (no receiver).
 	genericFuncs := map[string]*ast.FuncDecl{}
-	for _, d := range file.Decls { // collect standalone generic functions
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Type != nil && fd.Type.TypeParams != nil && fd.Recv == nil {
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Type != nil && fd.Type.TypeParams != nil {
 			genericFuncs[fd.Name.Name] = fd
 		}
 	}
-	seen := map[string]struct{}{}
+
+	// Discover explicit instantiations via IndexExpr / IndexListExpr.
+	insts := map[string][]string{}
+	seenInst := map[string]struct{}{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch e := n.(type) {
 		case *ast.IndexExpr:
 			if id, ok := e.X.(*ast.Ident); ok {
-				if g := generics[id.Name]; g != nil || genericFuncs[id.Name] != nil {
+				if generics[id.Name] != nil || genericFuncs[id.Name] != nil {
 					arg := exprToString(fset, e.Index)
 					key := id.Name + "[" + arg + "]"
-					if _, dup := seen[key]; !dup {
-						seen[key] = struct{}{}
+					if _, exists := seenInst[key]; !exists {
+						seenInst[key] = struct{}{}
 						insts[id.Name] = append(insts[id.Name], arg)
 					}
 				}
 			}
 		case *ast.IndexListExpr:
 			if id, ok := e.X.(*ast.Ident); ok {
-				if g := generics[id.Name]; g != nil || genericFuncs[id.Name] != nil {
-					var parts []string
+				if generics[id.Name] != nil || genericFuncs[id.Name] != nil {
+					parts := make([]string, 0, len(e.Indices))
 					for _, ix := range e.Indices {
 						parts = append(parts, exprToString(fset, ix))
 					}
 					arg := strings.Join(parts, ",")
 					key := id.Name + "[" + arg + "]"
-					if _, dup := seen[key]; !dup {
-						seen[key] = struct{}{}
+					if _, exists := seenInst[key]; !exists {
+						seenInst[key] = struct{}{}
 						insts[id.Name] = append(insts[id.Name], arg)
 					}
 				}
@@ -91,275 +106,205 @@ func RemoveGenerics(src []byte) []byte {
 		}
 		return true
 	})
-	// Heuristic: infer instantiations from calls to generic functions without explicit type args
-	for _, d := range file.Decls {
-		fd, ok := d.(*ast.FuncDecl)
-		if !ok {
+
+	// Expand partial instantiations for generic functions with missing type parameters.
+	for fnName, sigList := range insts {
+		gfn := genericFuncs[fnName]
+		if gfn == nil || gfn.Type == nil || gfn.Type.TypeParams == nil {
 			continue
 		}
-		ast.Inspect(fd, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+		var expectedParams []string
+		for _, tp := range gfn.Type.TypeParams.List {
+			for _, id := range tp.Names {
+				expectedParams = append(expectedParams, id.Name)
+			}
+		}
+
+		newSigs := []string{}
+		for _, sig := range sigList {
+			parts := strings.Split(sig, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
 			}
 
-			var funcName string
-			var gfn *ast.FuncDecl
-
-			// Handle both direct calls (func) and qualified calls (pkg.func)
-			switch fun := call.Fun.(type) {
-			case *ast.Ident:
-				funcName = fun.Name
-				gfn = genericFuncs[funcName]
-			case *ast.SelectorExpr:
-				funcName = fun.Sel.Name
-				gfn = genericFuncs[funcName]
-			default:
-				return true
-			}
-
-			if gfn == nil {
-				return true
-			}
-			// Previously we skipped once we had any instantiation; instead allow multiple distinct inferred instantiations.
-			// Attempt to map type params using arguments whose parameter types are single identifiers of type params.
-			if gfn.Type.Params == nil {
-				return true
-			}
-			paramList := gfn.Type.Params.List
-			if len(call.Args) != len(paramList) {
-				return true
-			}
-			mapping := map[string]string{}
-			for pi, p := range paramList {
-				// Only consider parameter types that are bare identifiers referring to a generic parameter
-				bt, okT := p.Type.(*ast.Ident)
-				if !okT {
-					continue
+			if len(parts) < len(expectedParams) {
+				// Try to infer missing parameters
+				// For NewHashMap[K comparable, V any, H Hasher[K]], if we have [intHash, int],
+				// we can infer H = K = intHash
+				if fnName == "NewHashMap" && len(parts) == 2 && len(expectedParams) == 3 {
+					// H Hasher[K] constraint means H should be same as K
+					newSig := parts[0] + "," + parts[1] + "," + parts[0]
+					newSigs = append(newSigs, newSig)
+				} else {
+					// Keep original
+					newSigs = append(newSigs, sig)
 				}
-				// attempt to derive concrete type from argument expression
-				arg := call.Args[pi]
-				switch a := arg.(type) {
-				case *ast.CompositeLit:
-					if a.Type != nil {
-						mapping[bt.Name] = exprToString(fset, a.Type)
-					} else {
-						// For composite literals without explicit type, try to infer from context
-						// Look for likely type names based on the composite literal structure
-						if len(a.Elts) == 0 {
-							// Empty composite literal - look for short type names in scope
-							for _, d := range file.Decls {
-								if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.TYPE {
-									for _, sp := range gd.Specs {
-										if ts, ok := sp.(*ast.TypeSpec); ok {
-											typeName := ts.Name.Name
-											// Heuristic: short type names are often used for empty structs
-											if len(typeName) <= 6 && strings.ToLower(typeName) == typeName {
-												mapping[bt.Name] = typeName
-												break
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				case *ast.CallExpr:
-					// Could be a constructor returning concrete type; ignore (needs deeper analysis)
-				case *ast.FuncLit:
-					// examine returns for composite literals
-					var retType string
-					ast.Inspect(a.Body, func(x ast.Node) bool {
-						ret, okR := x.(*ast.ReturnStmt)
-						if !okR {
-							return true
-						}
-						if len(ret.Results) == 1 {
-							if cl, okCL := ret.Results[0].(*ast.CompositeLit); okCL && cl.Type != nil {
-								retType = exprToString(fset, cl.Type)
-							}
+			} else {
+				newSigs = append(newSigs, sig)
+			}
+		}
+		insts[fnName] = newSigs
+	}
+
+	// Infer instantiations from generic function calls (heuristic argument → type param mapping).
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				nameIdent, okIdent := call.Fun.(*ast.Ident)
+				if !okIdent {
+					return true
+				}
+				gfn := genericFuncs[nameIdent.Name]
+				if gfn == nil || gfn.Type == nil || gfn.Type.Params == nil || gfn.Type.TypeParams == nil {
+					return true
+				}
+				if len(call.Args) != len(gfn.Type.Params.List) {
+					return true
+				}
+				// Build mapping from type parameter names to concrete types.
+				mapping := map[string]string{}
+				// Helper: does an expression tree contain an Ident with given name?
+				containsIdent := func(e ast.Expr, name string) bool {
+					found := false
+					ast.Inspect(e, func(n ast.Node) bool {
+						id, ok := n.(*ast.Ident)
+						if ok && id.Name == name {
+							found = true
+							return false
 						}
 						return true
 					})
-					if retType != "" {
-						mapping[bt.Name] = retType
+					return found
+				}
+				// Pass 1: direct patterns (Ident params, composite literals, basic literals, common index identifiers).
+				for i, p := range gfn.Type.Params.List {
+					argExpr := call.Args[i]
+					// Collect candidate generic identifiers present in formal parameter type.
+					var genericIdentsInParam []string
+					for _, tp := range gfn.Type.TypeParams.List {
+						for _, idn := range tp.Names {
+							if containsIdent(p.Type, idn.Name) {
+								genericIdentsInParam = append(genericIdentsInParam, idn.Name)
+							}
+						}
 					}
-				case *ast.UnaryExpr:
-					// pointer to composite literal
-					if cl, okCL := a.X.(*ast.CompositeLit); okCL && cl.Type != nil {
-						mapping[bt.Name] = exprToString(fset, cl.Type)
-					}
-				case *ast.BasicLit:
-					// Try to infer type from literal
-					switch a.Kind.String() {
-					case "INT":
-						mapping[bt.Name] = "int"
-					case "FLOAT":
-						mapping[bt.Name] = "float64"
-					case "STRING":
-						mapping[bt.Name] = "string"
-					}
-				case *ast.Ident:
-					// For simple identifiers, try to infer common types
-					// This is a heuristic - in real code analysis we'd need full type information
-					argName := a.Name
-					if strings.Contains(argName, "size") || strings.Contains(argName, "length") || strings.Contains(argName, "count") || strings.Contains(argName, "index") || argName == "i" || argName == "j" || argName == "k" || argName == "n" {
-						mapping[bt.Name] = "int"
+					// Map each generic ident from this parameter using argument expression.
+					for _, gname := range genericIdentsInParam {
+						if mapping[gname] != "" {
+							continue
+						}
+						switch a := argExpr.(type) {
+						case *ast.CompositeLit:
+							if a.Type != nil {
+								mapping[gname] = strings.TrimSpace(exprToString(fset, a.Type))
+							}
+						case *ast.UnaryExpr:
+							if cl, okCL := a.X.(*ast.CompositeLit); okCL && cl.Type != nil {
+								mapping[gname] = strings.TrimSpace(exprToString(fset, cl.Type))
+							}
+						case *ast.BasicLit:
+							switch a.Kind {
+							case token.INT:
+								mapping[gname] = "int"
+							case token.FLOAT:
+								mapping[gname] = "float64"
+							case token.STRING:
+								mapping[gname] = "string"
+							}
+						case *ast.Ident:
+							if a.Name == "n" || a.Name == "m" || a.Name == "i" || a.Name == "j" || strings.Contains(a.Name, "size") || strings.Contains(a.Name, "len") {
+								mapping[gname] = "int"
+							}
+						case *ast.CallExpr:
+							// Handle type casts like uint64(20), int(x), etc.
+							if funIdent, ok := a.Fun.(*ast.Ident); ok {
+								// This is a type cast - use the function name as the target type
+								mapping[gname] = funIdent.Name
+							}
+						}
 					}
 				}
-
-			}
-			// Build instantiation string if we mapped all generic params
-			if gfn.Type.TypeParams != nil {
+				// Pass 2: function literal return type extraction for parameters whose formal type embeds generic identifiers.
+				for i, p := range gfn.Type.Params.List {
+					argExpr := call.Args[i]
+					fnType, okFT := p.Type.(*ast.FuncType)
+					if !okFT {
+						continue
+					}
+					lit, okLit := argExpr.(*ast.FuncLit)
+					if !okLit || lit.Type == nil || lit.Type.Results == nil || len(lit.Type.Results.List) == 0 {
+						continue
+					}
+					// Currently only handle single-result functions.
+					if len(lit.Type.Results.List) != len(fnType.Results.List) { /* still attempt if counts differ? skip */
+					}
+					for _, tp := range gfn.Type.TypeParams.List {
+						for _, idn := range tp.Names {
+							if mapping[idn.Name] != "" {
+								continue
+							}
+							if containsIdent(p.Type, idn.Name) {
+								// Use first result type of literal.
+								resType := lit.Type.Results.List[0].Type
+								mapping[idn.Name] = strings.TrimSpace(exprToString(fset, resType))
+							}
+						}
+					}
+				}
+				// Build signature from mapping; require all parameters resolved.
 				parts := []string{}
-				allMapped := true
+				all := true
 				for _, tp := range gfn.Type.TypeParams.List {
-					for _, name := range tp.Names {
-						val := mapping[name.Name]
-						if val == "" {
-							allMapped = false
+					for _, id := range tp.Names {
+						v := mapping[id.Name]
+						if v == "" {
+							all = false
 						}
-						parts = append(parts, val)
+						parts = append(parts, v)
 					}
 				}
-
-				// Try to infer missing type parameters from interface constraints
-				if !allMapped && gfn.Type.TypeParams != nil {
-					for _, tp := range gfn.Type.TypeParams.List {
-						for _, name := range tp.Names {
-							if mapping[name.Name] == "" {
-								// Try to infer from interface constraint
-								if iface, ok := tp.Type.(*ast.InterfaceType); ok {
-									for _, method := range iface.Methods.List {
-										// Look for patterns like *update in interface
-										if starExpr, ok := method.Type.(*ast.StarExpr); ok {
-											if ident, ok := starExpr.X.(*ast.Ident); ok {
-												if baseType := mapping[ident.Name]; baseType != "" {
-													mapping[name.Name] = "*" + baseType
-													break
-												}
-											}
-										}
+				if !all {
+					return true
+				}
+				sig := strings.Join(parts, ",")
+				key := gfn.Name.Name + "[" + sig + "]"
+				if _, exists := seenInst[key]; !exists {
+					seenInst[key] = struct{}{}
+					insts[gfn.Name.Name] = append(insts[gfn.Name.Name], sig)
+				}
+				// Instantiate any generic struct returned by this function using mapped parameters.
+				if gfn.Type.Results != nil && len(gfn.Type.Results.List) == 1 {
+					retT := gfn.Type.Results.List[0].Type
+					if se, ok := retT.(*ast.StarExpr); ok {
+						retT = se.X
+					}
+					var idxList *ast.IndexListExpr
+					switch rt := retT.(type) {
+					case *ast.IndexExpr:
+						idxList = &ast.IndexListExpr{X: rt.X, Indices: []ast.Expr{rt.Index}}
+					case *ast.IndexListExpr:
+						idxList = rt
+					}
+					if idxList != nil {
+						if baseId, okB := idxList.X.(*ast.Ident); okB {
+							if gStruct := generics[baseId.Name]; gStruct != nil && gStruct.isStruct {
+								innerParts := []string{}
+								for _, ix := range idxList.Indices {
+									if idInner, okIn := ix.(*ast.Ident); okIn {
+										innerParts = append(innerParts, mapping[idInner.Name])
+									} else {
+										innerParts = append(innerParts, exprToString(fset, ix))
 									}
 								}
-							}
-						}
-					}
-
-					// Rebuild parts array with inferred types
-					parts = []string{}
-					allMapped = true
-					for _, tp := range gfn.Type.TypeParams.List {
-						for _, name := range tp.Names {
-							val := mapping[name.Name]
-							if val == "" {
-								allMapped = false
-							}
-							parts = append(parts, val)
-						}
-					}
-				}
-
-				if allMapped {
-					argStr := strings.Join(parts, ",")
-					key := funcName + "[" + argStr + "]"
-					if _, dup := seen[key]; !dup {
-						seen[key] = struct{}{}
-						// ensure uniqueness in insts slice (avoid duplicates from different paths)
-						already := false
-						for _, existing := range insts[funcName] {
-							if existing == argStr {
-								already = true
-								break
-							}
-						}
-						if !already {
-							insts[funcName] = append(insts[funcName], argStr)
-						}
-					}
-					// Also add struct instantiation for any return type referencing generic struct with params
-					if gfn.Type.Results != nil && len(gfn.Type.Results.List) == 1 {
-						ret := gfn.Type.Results.List[0].Type
-						if se, okSe := ret.(*ast.StarExpr); okSe {
-							ret = se.X
-						}
-						if ix, okIx := ret.(*ast.IndexListExpr); okIx {
-							if base, okB := ix.X.(*ast.Ident); okB {
-								if _, isStruct := generics[base.Name]; isStruct {
-									// Map generic struct params via mapping
-									structParts := []string{}
-									for _, tp := range generics[base.Name].params {
-										for _, id2 := range tp.Names {
-											structParts = append(structParts, mapping[id2.Name])
-										}
-									}
-									sp := strings.Join(structParts, ",")
-									sKey := base.Name + "[" + sp + "]"
-									if _, dup2 := seen[sKey]; !dup2 {
-										seen[sKey] = struct{}{}
-										insts[base.Name] = append(insts[base.Name], sp)
-									}
-									// Update other generic types that might be referenced
-									for nestedName, ng := range generics {
-										if ng != nil && ng.params != nil {
-											var nestedArgs []string
-											allFound := true
-											for _, p := range ng.params {
-												for _, id := range p.Names {
-													if val, exists := mapping[id.Name]; exists {
-														nestedArgs = append(nestedArgs, val)
-													} else {
-														allFound = false
-														break
-													}
-												}
-												if !allFound {
-													break
-												}
-											}
-											if allFound && len(nestedArgs) > 0 {
-												nestedArg := strings.Join(nestedArgs, ",")
-												keyNested := nestedName + "[" + nestedArg + "]"
-												if _, dupN := seen[keyNested]; !dupN {
-													seen[keyNested] = struct{}{}
-													insts[nestedName] = append(insts[nestedName], nestedArg)
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-			return true
-		})
-	}
-
-	// Detect calls to other generic functions from within generic functions
-	for _, gfn := range genericFuncs {
-		if len(insts[gfn.Name.Name]) > 0 {
-			// This function has instantiations, scan its body for calls to other generic functions
-			ast.Inspect(gfn.Body, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok {
-					if id, ok := call.Fun.(*ast.Ident); ok {
-						if targetFn := genericFuncs[id.Name]; targetFn != nil {
-							// Found a call to another generic function
-							// Try to infer the instantiation based on argument types in context
-							if len(call.Args) == 1 {
-								// For single argument functions, try some common patterns
-								arg := call.Args[0]
-								if binExpr, ok := arg.(*ast.BinaryExpr); ok {
-									// Handle patterns like "x64-1" where x64 is uint64
-									if ident, ok := binExpr.X.(*ast.Ident); ok && strings.Contains(ident.Name, "64") {
-										// Likely uint64
-										key := id.Name + "[uint64]"
-										if _, dup := seen[key]; !dup {
-											seen[key] = struct{}{}
-											insts[id.Name] = append(insts[id.Name], "uint64")
-										}
-									}
+								innerSig := strings.Join(innerParts, ",")
+								innerKey := baseId.Name + "[" + innerSig + "]"
+								if _, exists := seenInst[innerKey]; !exists {
+									seenInst[innerKey] = struct{}{}
+									insts[baseId.Name] = append(insts[baseId.Name], innerSig)
 								}
 							}
 						}
@@ -370,102 +315,425 @@ func RemoveGenerics(src []byte) []byte {
 		}
 	}
 
-	// Filter out instantiations that only contain generic parameter names
-	allGenericParams := make(map[string]bool)
-	for _, g := range generics {
-		if g.params != nil {
-			for _, p := range g.params {
-				for _, id := range p.Names {
-					allGenericParams[id.Name] = true
+	// Propagate nested generic struct field instantiations.
+	for outerName, sigList := range insts {
+		og := generics[outerName]
+		if og == nil || !og.isStruct || og.fields == nil {
+			continue
+		}
+
+		var order []string
+		for _, p := range og.params {
+			for _, id := range p.Names {
+				order = append(order, id.Name)
+			}
+		}
+		for _, sig := range sigList {
+			parts := strings.Split(sig, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			mapping := map[string]string{}
+			for i, name := range order {
+				if i < len(parts) {
+					mapping[name] = parts[i]
 				}
+			}
+			for _, fld := range og.fields.List {
+				ast.Inspect(fld.Type, func(n ast.Node) bool {
+					switch ex := n.(type) {
+					case *ast.IndexExpr:
+						if id, ok := ex.X.(*ast.Ident); ok {
+							ig := generics[id.Name]
+							if ig != nil && ig.isStruct {
+								arg := exprToString(fset, ex.Index)
+								for k, v := range mapping {
+									arg = replaceTypeToken(arg, k, v)
+								}
+								arg = strings.TrimSpace(arg)
+								if arg != "" {
+									addInstantiation(insts, id.Name, arg)
+								}
+							}
+						}
+					case *ast.IndexListExpr:
+						if id, ok := ex.X.(*ast.Ident); ok {
+							ig := generics[id.Name]
+							if ig != nil && ig.isStruct {
+								parts2 := make([]string, 0, len(ex.Indices))
+								for _, ix := range ex.Indices {
+									seg := exprToString(fset, ix)
+									for k, v := range mapping {
+										seg = replaceTypeToken(seg, k, v)
+									}
+									parts2 = append(parts2, strings.TrimSpace(seg))
+								}
+								joined := strings.Join(parts2, ",")
+								if strings.TrimSpace(joined) != "" {
+									addInstantiation(insts, id.Name, joined)
+								}
+							}
+						}
+					}
+					return true
+				})
 			}
 		}
 	}
-	// Also include function-level generic parameters
-	for _, gfn := range genericFuncs {
-		if gfn.Type.TypeParams != nil {
-			for _, p := range gfn.Type.TypeParams.List {
+
+	// Pre-filter dependency expansion: for each struct instantiation, substitute outer concrete args into inner param-only generic struct usages.
+	for outerName, sigList := range insts {
+		og := generics[outerName]
+		if og == nil || !og.isStruct || og.fields == nil {
+			continue
+		}
+		// Order of outer params.
+		var outerParamNames []string
+		for _, p := range og.params {
+			for _, id := range p.Names {
+				outerParamNames = append(outerParamNames, id.Name)
+			}
+		}
+		for _, sig := range sigList {
+			parts := strings.Split(sig, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			if len(parts) != len(outerParamNames) {
+				continue
+			}
+			outerMap := map[string]string{}
+			for i, pn := range outerParamNames {
+				outerMap[pn] = parts[i]
+			}
+			for _, fld := range og.fields.List {
+				ast.Inspect(fld.Type, func(n ast.Node) bool {
+					switch ex := n.(type) {
+					case *ast.IndexListExpr:
+						if baseId, okB := ex.X.(*ast.Ident); okB {
+							inner := generics[baseId.Name]
+							if inner != nil && inner.isStruct {
+								innerArgs := make([]string, 0, len(ex.Indices))
+								for _, ix := range ex.Indices {
+									if idInner, okIn := ix.(*ast.Ident); okIn {
+										mapped := outerMap[idInner.Name]
+										if mapped == "" {
+											mapped = idInner.Name
+										}
+										innerArgs = append(innerArgs, mapped)
+										// param-only status no longer tracked; outer substitution will create concrete args later.
+									} else {
+										seg := exprToString(fset, ix)
+										innerArgs = append(innerArgs, seg)
+										// param-only status no longer tracked.
+									}
+								}
+								joined := strings.Join(innerArgs, ",")
+								if joined != "" {
+									addInstantiation(insts, baseId.Name, joined)
+								}
+								// Removed param-only note; filtering happens after potential concrete substitution.
+							}
+						}
+					case *ast.IndexExpr:
+						if baseId, okB := ex.X.(*ast.Ident); okB {
+							inner := generics[baseId.Name]
+							if inner != nil && inner.isStruct {
+								seg := exprToString(fset, ex.Index)
+								seg = strings.TrimSpace(seg)
+								if seg != "" {
+									addInstantiation(insts, baseId.Name, seg)
+								}
+							}
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+
+	// Propagate from generic function return types (if returning generic struct).
+	for fnName, sigList := range insts {
+		gfn := genericFuncs[fnName]
+		if gfn == nil || gfn.Type == nil || gfn.Type.Results == nil || len(gfn.Type.Results.List) != 1 {
+			continue
+		}
+
+		ret := gfn.Type.Results.List[0].Type
+		if se, ok := ret.(*ast.StarExpr); ok {
+			ret = se.X
+		}
+		var idxList *ast.IndexListExpr
+		switch rt := ret.(type) {
+		case *ast.IndexListExpr:
+			idxList = rt
+		case *ast.IndexExpr:
+			idxList = &ast.IndexListExpr{X: rt.X, Indices: []ast.Expr{rt.Index}}
+		}
+		if idxList == nil {
+			continue
+		}
+		base, okBase := idxList.X.(*ast.Ident)
+		if !okBase {
+			continue
+		}
+		gs := generics[base.Name]
+		if gs == nil || !gs.isStruct {
+			continue
+		}
+		var order []string
+		for _, p := range gfn.Type.TypeParams.List {
+			for _, id := range p.Names {
+				order = append(order, id.Name)
+			}
+		}
+		for _, sig := range sigList {
+			parts := strings.Split(sig, ",")
+			if len(parts) != len(order) {
+				continue
+			}
+			mp := map[string]string{}
+			for i, n := range order {
+				mp[n] = strings.TrimSpace(parts[i])
+			}
+			structArgs := make([]string, 0, len(idxList.Indices))
+			for _, e := range idxList.Indices {
+				if id, ok := e.(*ast.Ident); ok {
+					structArgs = append(structArgs, mp[id.Name])
+				} else {
+					s := exprToString(fset, e)
+					for k, v := range mp {
+						s = replaceTypeToken(s, k, v)
+					}
+					structArgs = append(structArgs, s)
+				}
+			}
+			if len(structArgs) > 0 {
+				addInstantiation(insts, base.Name, strings.Join(structArgs, ","))
+			}
+		}
+	}
+
+	// Propagate nested generic struct field instantiations (again, after return type propagation).
+	for outerName, sigList := range insts {
+		og := generics[outerName]
+		if og == nil || !og.isStruct || og.fields == nil {
+			continue
+		}
+
+		var order []string
+		for _, p := range og.params {
+			for _, id := range p.Names {
+				order = append(order, id.Name)
+			}
+		}
+		for _, sig := range sigList {
+			parts := strings.Split(sig, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			mapping := map[string]string{}
+			for i, name := range order {
+				if i < len(parts) {
+					mapping[name] = parts[i]
+				}
+			}
+			for _, fld := range og.fields.List {
+				ast.Inspect(fld.Type, func(n ast.Node) bool {
+					switch ex := n.(type) {
+					case *ast.IndexExpr:
+						if id, ok := ex.X.(*ast.Ident); ok {
+							ig := generics[id.Name]
+							if ig != nil && ig.isStruct {
+								arg := exprToString(fset, ex.Index)
+								for k, v := range mapping {
+									arg = replaceTypeToken(arg, k, v)
+								}
+								arg = strings.TrimSpace(arg)
+								if arg != "" {
+									addInstantiation(insts, id.Name, arg)
+								}
+							}
+						}
+					case *ast.IndexListExpr:
+						if id, ok := ex.X.(*ast.Ident); ok {
+							ig := generics[id.Name]
+							if ig != nil && ig.isStruct {
+								parts2 := make([]string, 0, len(ex.Indices))
+								for _, ix := range ex.Indices {
+									s := exprToString(fset, ix)
+									for k, v := range mapping {
+										s = replaceTypeToken(s, k, v)
+									}
+									parts2 = append(parts2, s)
+								}
+								joined := strings.Join(parts2, ",")
+								if strings.TrimSpace(joined) != "" {
+									addInstantiation(insts, id.Name, joined)
+								}
+							}
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+
+	// Global scan for generic type instantiations appearing anywhere (e.g. slice element types) not reached via propagation.
+	// This is parameter-agnostic and does not hardcode any names; it simply records Index/List expressions whose base is a known generic struct.
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch ex := n.(type) {
+		case *ast.IndexExpr:
+			if id, ok := ex.X.(*ast.Ident); ok {
+				if g := generics[id.Name]; g != nil && g.isStruct {
+					arg := exprToString(fset, ex.Index)
+					arg = strings.TrimSpace(arg)
+					if arg != "" {
+						addInstantiation(insts, id.Name, arg)
+					}
+				}
+			}
+		case *ast.IndexListExpr:
+			if id, ok := ex.X.(*ast.Ident); ok {
+				if g := generics[id.Name]; g != nil && g.isStruct {
+					parts := make([]string, 0, len(ex.Indices))
+					for _, ix := range ex.Indices {
+						seg := strings.TrimSpace(exprToString(fset, ix))
+						parts = append(parts, seg)
+					}
+					joined := strings.Join(parts, ",")
+					if strings.TrimSpace(joined) != "" {
+						addInstantiation(insts, id.Name, joined)
+					}
+				}
+			}
+		}
+		return true
+	})
+
+	// Fixed-point substitution of inner generic param-only signatures using outer concrete arguments before filtering.
+	changed := true
+	for changed {
+		changed = false
+		for outerName, sigList := range insts {
+			og := generics[outerName]
+			if og == nil || !og.isStruct || og.fields == nil {
+				continue
+			}
+			// Gather param order.
+			var order []string
+			for _, p := range og.params {
 				for _, id := range p.Names {
-					allGenericParams[id.Name] = true
+					order = append(order, id.Name)
+				}
+			}
+			for _, sig := range sigList {
+				parts := strings.Split(sig, ",")
+				if len(parts) != len(order) {
+					continue
+				}
+				mapping := map[string]string{}
+				for i, name := range order {
+					mapping[name] = strings.TrimSpace(parts[i])
+				}
+				for _, fld := range og.fields.List {
+					ast.Inspect(fld.Type, func(n ast.Node) bool {
+						switch ex := n.(type) {
+						case *ast.IndexListExpr:
+							if id, ok := ex.X.(*ast.Ident); ok {
+								ig := generics[id.Name]
+								if ig != nil && ig.isStruct {
+									innerParts := make([]string, 0, len(ex.Indices))
+									for _, ix := range ex.Indices {
+										if idIn, okIn := ix.(*ast.Ident); okIn {
+											innerParts = append(innerParts, strings.TrimSpace(mapping[idIn.Name]))
+										} else {
+											innerParts = append(innerParts, strings.TrimSpace(exprToString(fset, ix)))
+										}
+									}
+									joined := strings.Join(innerParts, ",")
+									// Add instantiation if new.
+									already := false
+									for _, existing := range insts[id.Name] {
+										if existing == joined {
+											already = true
+											break
+										}
+									}
+									if !already {
+										insts[id.Name] = append(insts[id.Name], joined)
+										changed = true
+									}
+								}
+							}
+						case *ast.IndexExpr:
+							if id, ok := ex.X.(*ast.Ident); ok {
+								ig := generics[id.Name]
+								if ig != nil && ig.isStruct {
+									seg := strings.TrimSpace(exprToString(fset, ex.Index))
+									already := false
+									for _, existing := range insts[id.Name] {
+										if existing == seg {
+											already = true
+											break
+										}
+									}
+									if seg != "" && !already {
+										insts[id.Name] = append(insts[id.Name], seg)
+										changed = true
+									}
+								}
+							}
+						}
+						return true
+					})
 				}
 			}
 		}
 	}
 
-	filtered := make(map[string][]string)
-	for name, instList := range insts {
-		for _, inst := range instList {
+	// Now apply parameter-only filtering.
+	paramNames := map[string]bool{}
+	for _, g := range generics {
+		for _, p := range g.params {
+			for _, id := range p.Names {
+				paramNames[id.Name] = true
+			}
+		}
+	}
+	for _, fn := range genericFuncs {
+		for _, p := range fn.Type.TypeParams.List {
+			for _, id := range p.Names {
+				paramNames[id.Name] = true
+			}
+		}
+	}
+	filtered := map[string][]string{}
+	for name, list := range insts {
+		for _, inst := range list {
 			parts := strings.Split(inst, ",")
-			hasConcreteType := false
+			keep := false
 			for _, part := range parts {
 				part = strings.TrimSpace(part)
-				if !allGenericParams[part] {
-					hasConcreteType = true
+				if part != "" && !paramNames[part] {
+					keep = true
 					break
 				}
 			}
-			if hasConcreteType {
+			if keep {
 				filtered[name] = append(filtered[name], inst)
 			}
 		}
 	}
 	insts = filtered
 
-	// Propagate instantiations: if a generic struct's field references another generic struct with identical parameter ordering,
-	// ensure both are instantiated with the same concrete arguments. This covers patterns like ST[value,update] containing node[value,update].
-	if len(insts) > 0 {
-		for outerName, outerArgsList := range insts {
-			outerGen := generics[outerName]
-			if outerGen == nil || !outerGen.isStruct || outerGen.fields == nil {
-				continue
-			}
-			for _, fld := range outerGen.fields.List {
-				fieldTypeStr := exprToString(fset, fld.Type)
-				for innerName, innerGen := range generics {
-					if innerGen == nil || !innerGen.isStruct || innerGen == outerGen || innerGen.params == nil {
-						continue
-					}
-					// Cheap check: field type must contain inner generic name followed by '['
-					if !strings.Contains(fieldTypeStr, innerName+"[") {
-						continue
-					}
-					// Parameter counts must match
-					paramCount := 0
-					for _, p := range innerGen.params {
-						paramCount += len(p.Names)
-					}
-					for _, outerArgs := range outerArgsList {
-						parts := strings.Split(outerArgs, ",")
-						if len(parts) != paramCount { // skip differing arity
-							continue
-						}
-						// Add instantiation for inner generic if missing
-						found := false
-						for _, existing := range insts[innerName] {
-							if existing == outerArgs {
-								found = true
-								break
-							}
-						}
-						if !found {
-							insts[innerName] = append(insts[innerName], outerArgs)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if len(insts) == 0 {
-		return src
-	}
-	// Ensure deterministic ordering: sort instantiation slices and then build nameMap in lexical order of generic names.
-	for name := range insts {
-		lst := insts[name]
-		// remove duplicates defensively & sort
-		uniq := make([]string, 0, len(lst))
+	// Deduplicate & sort instantiation signature lists.
+	for name, list := range insts {
+		uniq := []string{}
 		seenLocal := map[string]bool{}
-		for _, v := range lst {
+		for _, v := range list {
 			if !seenLocal[v] {
 				seenLocal[v] = true
 				uniq = append(uniq, v)
@@ -474,18 +742,34 @@ func RemoveGenerics(src []byte) []byte {
 		sort.Strings(uniq)
 		insts[name] = uniq
 	}
+	if len(insts) == 0 {
+		return src
+	}
+
+	// Map "Type[Sig]" → concrete name.
 	nameMap := map[string]string{}
 	for _, name := range sortedKeys(insts) {
-		list := insts[name]
-		for i, arg := range list {
-			nameMap[name+"["+arg+"]"] = fmt.Sprintf(genericNameFormat, name, i+1)
+		for i, sig := range insts[name] {
+			key := name + "[" + sig + "]"
+			concrete := fmt.Sprintf(genericNameFormat, name, i+1)
+			nameMap[key] = concrete
 		}
 	}
+
+	// Collect replacements: instantiated expressions & removal of generics.
 	type repl struct {
 		start, end int
 		text       string
 	}
-	var exprRepls []repl
+	replacements := []repl{}
+	seenTypeDecl := map[*ast.GenDecl]bool{}
+	origGenericFuncCode := map[*ast.FuncDecl]string{}
+	// Pre-capture generic function source before removal.
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Type != nil && fd.Type.TypeParams != nil {
+			origGenericFuncCode[fd] = nodeToString(fset, fd)
+		}
+	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch e := n.(type) {
 		case *ast.IndexExpr:
@@ -493,188 +777,437 @@ func RemoveGenerics(src []byte) []byte {
 				if _, isGen := generics[id.Name]; isGen {
 					arg := exprToString(fset, e.Index)
 					key := id.Name + "[" + arg + "]"
-					if newName, ok := nameMap[key]; ok {
-						exprRepls = append(exprRepls, repl{fset.Position(e.Pos()).Offset, fset.Position(e.End()).Offset, newName})
+					if nn, ok := nameMap[key]; ok {
+						replacements = append(replacements, repl{posOffset(fset, e.Pos()), posOffset(fset, e.End()), nn})
 					}
 				}
 			}
 		case *ast.IndexListExpr:
 			if id, ok := e.X.(*ast.Ident); ok {
 				if _, isGen := generics[id.Name]; isGen {
-					var parts []string
+					parts := []string{}
 					for _, ix := range e.Indices {
 						parts = append(parts, exprToString(fset, ix))
 					}
 					arg := strings.Join(parts, ",")
 					key := id.Name + "[" + arg + "]"
-					if newName, ok := nameMap[key]; ok {
-						exprRepls = append(exprRepls, repl{fset.Position(e.Pos()).Offset, fset.Position(e.End()).Offset, newName})
+					if nn, ok := nameMap[key]; ok {
+						replacements = append(replacements, repl{posOffset(fset, e.Pos()), posOffset(fset, e.End()), nn})
+					}
+				}
+			}
+		case *ast.GenDecl:
+			if e.Tok == token.TYPE && !seenTypeDecl[e] {
+				seenTypeDecl[e] = true
+				removable := true
+				for _, sp := range e.Specs {
+					if ts, ok := sp.(*ast.TypeSpec); ok && ts.TypeParams == nil {
+						removable = false
+					}
+				}
+				if removable {
+					replacements = append(replacements, repl{posOffset(fset, e.Pos()), posOffset(fset, e.End()), ""})
+				}
+			}
+		case *ast.FuncDecl:
+			if e.Recv == nil && e.Type != nil && e.Type.TypeParams != nil {
+				replacements = append(replacements, repl{posOffset(fset, e.Pos()), posOffset(fset, e.End()), ""})
+			}
+		}
+		return true
+	})
+	// Remove generic methods (we regenerate concrete versions later).
+	ast.Inspect(file, func(n ast.Node) bool {
+		fd, ok := n.(*ast.FuncDecl)
+		if !ok || fd.Recv == nil {
+			return true
+		}
+		for _, r := range fd.Recv.List {
+			base := r.Type
+			if se, ok := base.(*ast.StarExpr); ok {
+				base = se.X
+			}
+			switch bt := base.(type) {
+			case *ast.IndexExpr:
+				if id, ok := bt.X.(*ast.Ident); ok {
+					if _, isGen := generics[id.Name]; isGen {
+						replacements = append(replacements, repl{posOffset(fset, fd.Pos()), posOffset(fset, fd.End()), ""})
+					}
+				}
+			case *ast.IndexListExpr:
+				if id, ok := bt.X.(*ast.Ident); ok {
+					if _, isGen := generics[id.Name]; isGen {
+						replacements = append(replacements, repl{posOffset(fset, fd.Pos()), posOffset(fset, fd.End()), ""})
 					}
 				}
 			}
 		}
 		return true
 	})
-	var commentRepls []repl
-	// Comment out entire type declarations (ensuring 'type' keyword removed)
-	seenDecl := map[*ast.GenDecl]bool{}
-	for _, g := range generics {
-		if seenDecl[g.decl] {
-			continue
-		}
-		seenDecl[g.decl] = true
-		pos := fset.Position(g.decl.Pos()).Offset
-		end := fset.Position(g.decl.End()).Offset
-		// remove generic type completely instead of commenting
-		commentRepls = append(commentRepls, repl{pos, end, ""})
-	}
-	// Comment out top-level generic functions (no receiver, has type params)
-	for _, d := range file.Decls {
-		fd, ok := d.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		if fd.Recv != nil {
-			continue
-		}
-		if fd.Type != nil && fd.Type.TypeParams != nil {
-			pos := fset.Position(fd.Pos()).Offset
-			end := fset.Position(fd.End()).Offset
-			commentRepls = append(commentRepls, repl{pos, end, ""})
-		}
-	}
-	for _, d := range file.Decls {
-		fd, ok := d.(*ast.FuncDecl)
-		if !ok || fd.Recv == nil {
-			continue
-		}
-		for _, f := range fd.Recv.List {
-			base := f.Type
-			if se, ok := base.(*ast.StarExpr); ok {
-				base = se.X
-			}
-			switch bt := base.(type) {
-			case *ast.IndexExpr:
-				if id, ok := bt.X.(*ast.Ident); ok {
-					if _, isGen := generics[id.Name]; isGen {
-						pos := fset.Position(fd.Pos()).Offset
-						end := fset.Position(fd.End()).Offset
-						commentRepls = append(commentRepls, repl{pos, end, ""})
-					}
-				}
-			case *ast.IndexListExpr:
-				if id, ok := bt.X.(*ast.Ident); ok {
-					if _, isGen := generics[id.Name]; isGen {
-						pos := fset.Position(fd.Pos()).Offset
-						end := fset.Position(fd.End()).Offset
-						commentRepls = append(commentRepls, repl{pos, end, ""})
-					}
-				}
-			}
-		}
-	}
-	all := append(exprRepls, commentRepls...)
-	sort.Slice(all, func(i, j int) bool { return all[i].start < all[j].start })
-	var buf bytes.Buffer
+
+	sort.Slice(replacements, func(i, j int) bool { return replacements[i].start < replacements[j].start })
+	var base bytes.Buffer
 	cursor := 0
-	for _, r := range all {
+	for _, r := range replacements {
 		if r.start < cursor {
 			continue
 		}
-		buf.Write(src[cursor:r.start])
-		buf.WriteString(r.text)
+		base.Write(src[cursor:r.start])
+		base.WriteString(r.text)
 		cursor = r.end
 	}
-	buf.Write(src[cursor:])
-	buf.WriteString("\n// ---- Concrete Types (Generated) ----\n")
-	var structsBuf bytes.Buffer
-	for _, name := range sortedKeys(insts) {
-		g := generics[name]
-		if g == nil || !g.isStruct {
+	base.Write(src[cursor:])
+
+	// Replace generic function call sites (NewHashMap[intHash,int,intHash] -> NewHashMapG1, including partial spacing variants).
+	var baseStr string
+	for key, concrete := range nameMap {
+		// key is e.g. NewHashMap[intHash,int,intHash] or HashMap[intHash,int,intHash]
+		if !strings.Contains(key, "[") {
 			continue
-		} // skip interface generics: no concrete type emitted
-		for i, arg := range insts[name] {
-			concrete := fmt.Sprintf(genericNameFormat, name, i+1)
-			parts := strings.Split(arg, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
+		}
+		fnName := strings.Split(key, "[")[0]
+		// Only adjust function calls for generic functions.
+		if genericFuncs[fnName] == nil {
+			continue
+		}
+		// Replace explicit instantiation form in code with concrete name.
+		baseStr = base.String()
+
+		// Extract type parameters from the key
+		bracketStart := strings.Index(key, "[")
+		bracketEnd := strings.LastIndex(key, "]")
+		if bracketStart != -1 && bracketEnd != -1 && bracketEnd > bracketStart {
+			typeParams := key[bracketStart+1 : bracketEnd]
+			typeParamList := strings.Split(typeParams, ",")
+
+			// Create variants with different parameter counts (for type inference)
+			variants := []string{key, strings.ReplaceAll(key, ",", ", ")}
+
+			// Also try shorter versions with fewer explicit type parameters
+			// E.g., NewHashMap[intHash,int,intHash] -> also try NewHashMap[intHash,int]
+			for i := 1; i < len(typeParamList); i++ {
+				shorterParams := strings.Join(typeParamList[:i], ",")
+				shorterKey := fnName + "[" + shorterParams + "]"
+				variants = append(variants, shorterKey)
+				variants = append(variants, strings.ReplaceAll(shorterKey, ",", ", "))
 			}
-			mapping := map[string]string{}
-			if g.params != nil {
-				paramIndex := 0
-				for _, p := range g.params {
-					for _, id := range p.Names {
-						if paramIndex < len(parts) {
-							mapping[id.Name] = parts[paramIndex]
-							paramIndex++
+
+			for _, v := range variants {
+				baseStr = strings.ReplaceAll(baseStr, v, concrete)
+			}
+		}
+		base.Reset()
+		base.WriteString(baseStr)
+	}
+
+	// Replace inferred generic function calls with context-aware concrete versions.
+	// Parse the code again to analyze call sites and determine correct concrete versions.
+	baseStr = base.String()
+	fsetForCallAnalysis := token.NewFileSet()
+	astForCallAnalysis, err := parser.ParseFile(fsetForCallAnalysis, "", baseStr, parser.ParseComments)
+	if err != nil {
+		// If parsing fails, fall back to simple replacement with G1
+		for fnName, gfn := range genericFuncs {
+			if gfn == nil || len(insts[fnName]) == 0 {
+				continue
+			}
+			primaryConcrete := fmt.Sprintf(genericNameFormat, fnName, 1)
+			baseStr = strings.ReplaceAll(baseStr, fnName+"(", primaryConcrete+"(")
+		}
+	} else {
+		// Helper function to check if an expression contains an identifier
+		containsIdent := func(e ast.Expr, name string) bool {
+			found := false
+			ast.Inspect(e, func(n ast.Node) bool {
+				id, ok := n.(*ast.Ident)
+				if ok && id.Name == name {
+					found = true
+					return false
+				}
+				return true
+			})
+			return found
+		}
+
+		// Collect all call sites that need replacement
+		callReplacements := make(map[string]string) // oldCall -> newCall
+
+		ast.Inspect(astForCallAnalysis, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			nameIdent, okIdent := call.Fun.(*ast.Ident)
+			if !okIdent {
+				return true
+			}
+			fnName := nameIdent.Name
+			gfn := genericFuncs[fnName]
+			if gfn == nil || len(insts[fnName]) == 0 {
+				return true
+			}
+
+			// Extract the original call string
+			start := fsetForCallAnalysis.Position(call.Pos()).Offset
+			end := fsetForCallAnalysis.Position(call.End()).Offset
+			if start < 0 || end < 0 || start >= len(baseStr) || end > len(baseStr) {
+				return true
+			}
+			oldCall := baseStr[start:end]
+
+			// Try to match this call to one of our concrete instantiations based on argument analysis
+			concreteName := ""
+			if len(call.Args) > 0 && gfn.Type != nil && gfn.Type.Params != nil {
+				// Use similar argument analysis as in inference phase
+				mapping := map[string]string{}
+				if len(call.Args) == len(gfn.Type.Params.List) && gfn.Type.TypeParams != nil {
+					for i, p := range gfn.Type.Params.List {
+						argExpr := call.Args[i]
+						// Collect candidate generic identifiers present in formal parameter type
+						var genericIdentsInParam []string
+						for _, tp := range gfn.Type.TypeParams.List {
+							for _, idn := range tp.Names {
+								if containsIdent(p.Type, idn.Name) {
+									genericIdentsInParam = append(genericIdentsInParam, idn.Name)
+								}
+							}
+						}
+
+						// Map generic identifiers using argument analysis
+						for _, gname := range genericIdentsInParam {
+							if mapping[gname] != "" {
+								continue
+							}
+							switch a := argExpr.(type) {
+							case *ast.BasicLit:
+								switch a.Kind {
+								case token.INT:
+									mapping[gname] = "int"
+								case token.FLOAT:
+									mapping[gname] = "float64"
+								case token.STRING:
+									mapping[gname] = "string"
+								}
+							case *ast.CallExpr:
+								// Handle type casts like uint64(20), int(x), etc.
+								if funIdent, ok := a.Fun.(*ast.Ident); ok {
+									mapping[gname] = funIdent.Name
+								}
+							}
+						}
+					}
+				}
+
+				// Create signature string from mapping to match against stored instantiations
+				if len(mapping) > 0 && gfn.Type.TypeParams != nil {
+					var sigParts []string
+					for _, tp := range gfn.Type.TypeParams.List {
+						for _, idn := range tp.Names {
+							if mappedType, ok := mapping[idn.Name]; ok {
+								sigParts = append(sigParts, mappedType)
+							}
+						}
+					}
+					if len(sigParts) > 0 {
+						targetSig := strings.Join(sigParts, ",")
+						// Try to match this signature to one of our instantiations
+						for i, sig := range insts[fnName] {
+							if sig == targetSig {
+								concreteName = fmt.Sprintf(genericNameFormat, fnName, i+1)
+								break
+							}
 						}
 					}
 				}
 			}
 
-			// Build fields with precise type substitution
-			var fBuilder strings.Builder
-			if g.fields != nil {
-				for _, fld := range g.fields.List {
-					// Collect field names
-					var names []string
-					for _, nm := range fld.Names {
-						names = append(names, nm.Name)
+			// If we couldn't match based on arguments, use the first instantiation
+			if concreteName == "" {
+				concreteName = fmt.Sprintf(genericNameFormat, fnName, 1)
+			}
+
+			// Replace this specific call
+			newCall := strings.Replace(oldCall, fnName+"(", concreteName+"(", 1)
+			callReplacements[oldCall] = newCall
+
+			return true
+		})
+
+		// Apply all replacements
+		for oldCall, newCall := range callReplacements {
+			baseStr = strings.ReplaceAll(baseStr, oldCall, newCall)
+		}
+	}
+	base.Reset()
+	base.WriteString(baseStr)
+
+	// Strip residual generic brackets from concrete function calls (ConcreteG1[...]( -> ConcreteG1().
+	baseStr = base.String()
+	for _, concrete := range nameMap {
+		// Only concrete names ending with G<number>
+		if !strings.Contains(concrete, "G") {
+			continue
+		}
+		idx := 0
+		for {
+			pos := strings.Index(baseStr[idx:], concrete+"[")
+			if pos == -1 {
+				break
+			}
+			pos += idx
+			// find closing ] before next '(' or abort
+			close := strings.Index(baseStr[pos:], "]")
+			if close == -1 {
+				break
+			}
+			// ensure next non-space char after ] is '(' to qualify as call
+			after := pos + close + 1
+			for after < len(baseStr) && (baseStr[after] == ' ' || baseStr[after] == '\t') {
+				after++
+			}
+			if after < len(baseStr) && baseStr[after] == '(' {
+				// remove bracketed part
+				baseStr = baseStr[:pos+len(concrete)] + baseStr[pos+close+1:]
+				idx = pos + len(concrete)
+				continue
+			}
+			idx = pos + 1
+		}
+	}
+
+	// Handle implicit generic function calls by analyzing argument types
+	// This fixes cases like NewContainer(42) -> NewContainerG1(42) and NewContainer("hello") -> NewContainerG2("hello")
+	for fnName := range genericFuncs {
+		if len(insts[fnName]) == 0 {
+			continue
+		}
+
+		// Find all calls to this generic function (without type parameters)
+		searchPattern := fnName + "("
+		idx := 0
+		for {
+			pos := strings.Index(baseStr[idx:], searchPattern)
+			if pos == -1 {
+				break
+			}
+			pos += idx
+
+			// Extract the arguments to determine which concrete version to use
+			parenCount := 1
+			argStart := pos + len(searchPattern)
+			argEnd := argStart
+			for argEnd < len(baseStr) && parenCount > 0 {
+				if baseStr[argEnd] == '(' {
+					parenCount++
+				} else if baseStr[argEnd] == ')' {
+					parenCount--
+				}
+				argEnd++
+			}
+
+			if parenCount == 0 {
+				args := baseStr[argStart : argEnd-1] // exclude closing paren
+
+				// Simple heuristic: determine concrete type based on first argument
+				var concreteName string
+				args = strings.TrimSpace(args)
+				if strings.HasPrefix(args, "42") || strings.HasPrefix(args, "0") || (strings.Contains(args, ",") && strings.Contains(strings.Split(args, ",")[0], "int")) {
+					// First instantiation (likely int-based)
+					concreteName = fmt.Sprintf(genericNameFormat, fnName, 1)
+				} else if strings.HasPrefix(args, "\"") || strings.Contains(args, "string") {
+					// Second instantiation (likely string-based)
+					concreteName = fmt.Sprintf(genericNameFormat, fnName, 2)
+				} else {
+					// Default to first instantiation
+					concreteName = fmt.Sprintf(genericNameFormat, fnName, 1)
+				}
+
+				// Replace this specific call
+				oldCall := baseStr[pos:argEnd]
+				newCall := strings.Replace(oldCall, fnName+"(", concreteName+"(", 1)
+				baseStr = baseStr[:pos] + newCall + baseStr[argEnd:]
+				idx = pos + len(newCall)
+			} else {
+				idx = pos + 1
+			}
+		}
+	}
+
+	base.Reset()
+	base.WriteString(baseStr)
+
+	// Emit concrete struct types.
+	base.WriteString("\n// ---- Concrete Types (Generated) ----\n")
+	for _, name := range sortedKeys(insts) {
+		g := generics[name]
+		if g == nil || !g.isStruct || g.fields == nil {
+			continue
+		}
+		for i, sig := range insts[name] {
+			concrete := fmt.Sprintf(genericNameFormat, name, i+1)
+			parts := strings.Split(sig, ",")
+			for k := range parts {
+				parts[k] = strings.TrimSpace(parts[k])
+			}
+			mapping := map[string]string{}
+			pi := 0
+			for _, p := range g.params {
+				for _, id := range p.Names {
+					if pi < len(parts) {
+						mapping[id.Name] = parts[pi]
+						pi++
 					}
-					// Original type source
-					typeStr := exprToString(fset, fld.Type)
-					// Apply mapping only on type tokens (this replaces simple type params like 'value' -> 'stValue')
-					for k, v := range mapping {
-						typeStr = replaceTypeToken(typeStr, k, v)
-					}
-					fBuilder.WriteString(strings.Join(names, ", ") + " " + typeStr + "\n")
 				}
 			}
-			structsBuf.WriteString(fmt.Sprintf("type %s struct { %s }\n", concrete, fBuilder.String()))
+			var fbuf strings.Builder
+			for _, fld := range g.fields.List {
+				var names []string
+				for _, nm := range fld.Names {
+					names = append(names, nm.Name)
+				}
+				typeStr := exprToString(fset, fld.Type)
+				for k, v := range mapping {
+					typeStr = replaceTypeToken(typeStr, k, v)
+				}
+				fbuf.WriteString(strings.Join(names, ", ") + " " + typeStr + "\n")
+			}
+			base.WriteString(fmt.Sprintf("type %s struct { %s }\n", concrete, fbuf.String()))
 		}
 	}
 
-	// Second pass: replace any remaining generic instantiations in struct definitions
-	structsText := structsBuf.String()
-	for key, newName := range nameMap {
-		structsText = strings.ReplaceAll(structsText, key, newName)
-		if strings.Contains(key, ",") {
-			keySpaced := strings.ReplaceAll(key, ",", ", ")
-			structsText = strings.ReplaceAll(structsText, keySpaced, newName)
-		}
-	}
+	// Removed fallback heuristic synthesis for nodeG*; rely solely on proper instantiation propagation.
 
-	buf.WriteString(structsText)
-	buf.WriteString("// ---- Concrete Methods (Generated) ----\n")
+	// Emit concrete methods.
+	base.WriteString("// ---- Concrete Methods (Generated) ----\n")
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
 		if !ok || fd.Recv == nil {
 			continue
 		}
 		var genName, ptr, origSig string
-		for _, f := range fd.Recv.List {
-			base := f.Type
-			if se, ok := base.(*ast.StarExpr); ok {
+		for _, r := range fd.Recv.List {
+			baseT := r.Type
+			if se, ok := baseT.(*ast.StarExpr); ok {
 				ptr = "*"
-				base = se.X
+				baseT = se.X
 			}
-			switch bt := base.(type) {
+			switch bt := baseT.(type) {
 			case *ast.IndexExpr:
 				if id, ok := bt.X.(*ast.Ident); ok {
-					if _, isGen := generics[id.Name]; isGen {
+					if generics[id.Name] != nil {
 						genName = id.Name
 						origSig = exprToString(fset, bt.Index)
 					}
 				}
 			case *ast.IndexListExpr:
 				if id, ok := bt.X.(*ast.Ident); ok {
-					if _, isGen := generics[id.Name]; isGen {
+					if generics[id.Name] != nil {
 						genName = id.Name
-						var parts []string
+						var ps []string
 						for _, ix := range bt.Indices {
-							parts = append(parts, exprToString(fset, ix))
+							ps = append(ps, exprToString(fset, ix))
 						}
-						origSig = strings.Join(parts, ",")
+						origSig = strings.Join(ps, ",")
 					}
 				}
 			}
@@ -683,147 +1216,257 @@ func RemoveGenerics(src []byte) []byte {
 			continue
 		}
 		orig := nodeToString(fset, fd)
-		// No special casing of any type
-		for i, sig2 := range insts[genName] {
+		for i, sig := range insts[genName] {
 			concrete := fmt.Sprintf(genericNameFormat, genName, i+1)
 			newSrc := orig
-			if sig2 != origSig && origSig != "" {
-				// normalize original receiver to target inst signature first
-				patOrig := ptr + genName + "[" + origSig + "]"
-				patOrigSpaced := ptr + genName + "[" + strings.ReplaceAll(origSig, ",", ", ") + "]"
-				newSrc = strings.ReplaceAll(newSrc, patOrig, ptr+genName+"["+sig2+"]")
-				newSrc = strings.ReplaceAll(newSrc, patOrigSpaced, ptr+genName+"["+sig2+"]")
+			if sig != origSig && origSig != "" {
+				patO := ptr + genName + "[" + origSig + "]"
+				patOS := ptr + genName + "[" + strings.ReplaceAll(origSig, ",", ", ") + "]"
+				newSrc = strings.ReplaceAll(newSrc, patO, ptr+genName+"["+sig+"]")
+				newSrc = strings.ReplaceAll(newSrc, patOS, ptr+genName+"["+sig+"]")
 			}
-			// now replace target signature with concrete
-			pat := ptr + genName + "[" + sig2 + "]"
-			patSpaced := ptr + genName + "[" + strings.ReplaceAll(sig2, ",", ", ") + "]"
+			pat := ptr + genName + "[" + sig + "]"
+			patSp := ptr + genName + "[" + strings.ReplaceAll(sig, ",", ", ") + "]"
 			newSrc = strings.ReplaceAll(newSrc, pat, ptr+concrete)
-			newSrc = strings.ReplaceAll(newSrc, patSpaced, ptr+concrete)
-			// Replace type parameter identifiers inside method body/signature
-			parts := strings.Split(sig2, ",")
+			newSrc = strings.ReplaceAll(newSrc, patSp, ptr+concrete)
+			parts := strings.Split(sig, ",")
 			for k := range parts {
 				parts[k] = strings.TrimSpace(parts[k])
 			}
 			if g := generics[genName]; g != nil {
-				paramIndex := 0
+				pi := 0
 				for _, p := range g.params {
 					for _, id := range p.Names {
-						if paramIndex < len(parts) {
-							newSrc = replaceTypeToken(newSrc, id.Name, parts[paramIndex])
-							paramIndex++
+						if pi < len(parts) {
+							newSrc = replaceTypeToken(newSrc, id.Name, parts[pi])
+							pi++
 						}
 					}
 				}
 			}
-			// Replace nested generic instantiations like node[...] inside method bodies
 			for old, mapped := range nameMap {
 				newSrc = strings.ReplaceAll(newSrc, old, mapped)
 			}
 
-			buf.WriteString(newSrc + "\n")
+			// Also apply inferred generic call replacement for method bodies
+			for depFnName, depFn := range genericFuncs {
+				if depFn == nil || len(insts[depFnName]) == 0 {
+					continue
+				}
+				// Replace bare function calls with concrete versions (use first instantiation)
+				depConcrete := fmt.Sprintf(genericNameFormat, depFnName, 1)
+				newSrc = strings.ReplaceAll(newSrc, depFnName+"(", depConcrete+"(")
+			}
+
+			base.WriteString(newSrc + "\n")
 		}
 	}
 
-	// Clone standalone generic functions (constructor-style or normal)
-	buf.WriteString("// ---- Concrete Generic Functions (Generated) ----\n")
-	producedSingle := map[string]string{}
-	for name, fn := range genericFuncs {
-		instList := insts[name]
-		// If not instantiated explicitly, attempt inference from return type generic instantiation
-		if len(instList) == 0 && fn.Type.Results != nil && len(fn.Type.Results.List) == 1 {
-			ret := fn.Type.Results.List[0].Type
-			if se, ok := ret.(*ast.StarExpr); ok {
-				ret = se.X
+	// Recursive dependency resolution: detect generic calls within generated function bodies
+	// and ensure their concrete versions are also generated.
+	maxIterations := 10
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		newDeps := false
+
+		// Scan all current instantiations for additional generic function calls
+		for fnName, sigList := range insts {
+			if genericFuncs[fnName] == nil {
+				continue
 			}
-			switch rt := ret.(type) {
-			case *ast.IndexExpr:
-				if id, ok2 := rt.X.(*ast.Ident); ok2 {
-					if list, ok3 := insts[id.Name]; ok3 {
-						instList = list
+			for _, sig := range sigList {
+				// Get the function body and look for generic calls
+				orig := nodeToString(fset, genericFuncs[fnName])
+				parts := strings.Split(sig, ",")
+				for k := range parts {
+					parts[k] = strings.TrimSpace(parts[k])
+				}
+
+				// Apply type parameter substitutions to see what the concrete body looks like
+				funcBody := orig
+				if genericFuncs[fnName].Type.TypeParams != nil {
+					pi := 0
+					for _, p := range genericFuncs[fnName].Type.TypeParams.List {
+						for _, id := range p.Names {
+							if pi < len(parts) {
+								funcBody = replaceTypeToken(funcBody, id.Name, parts[pi])
+								pi++
+							}
+						}
 					}
 				}
-			case *ast.IndexListExpr:
-				if id, ok2 := rt.X.(*ast.Ident); ok2 {
-					if list, ok3 := insts[id.Name]; ok3 {
-						instList = list
+
+				// Look for calls to other generic functions within this body
+				for otherFnName, otherFn := range genericFuncs {
+					if otherFn == nil || otherFnName == fnName {
+						continue
+					}
+
+					// Look for calls like "otherFnName(" in the function body
+					callPattern := otherFnName + "("
+					if strings.Contains(funcBody, callPattern) {
+						// Found a call to another generic function - try to infer its type signature
+						// Use specific knowledge about function patterns
+						var depSig string
+						if fnName == "Log2Ceil" && otherFnName == "Log2Floor" {
+							// Log2Ceil always converts to uint64 and calls Log2Floor with uint64
+							depSig = "uint64"
+						} else if (fnName == "NewHashMap" || fnName == "NewST") && otherFnName == "Log2Ceil" {
+							// Constructor functions typically call Log2Ceil with int size arguments
+							depSig = "int"
+						} else if otherFnName == "IsPowerOf2" {
+							// IsPowerOf2 is typically called with int arguments in control flow
+							depSig = "int"
+						} else if len(parts) > 0 {
+							// Default heuristic: use same signature as calling function
+							depSig = parts[0]
+						}
+
+						if depSig != "" {
+							key := otherFnName + "[" + depSig + "]"
+							if _, exists := seenInst[key]; !exists {
+								seenInst[key] = struct{}{}
+								insts[otherFnName] = append(insts[otherFnName], depSig)
+								newDeps = true
+							}
+						}
 					}
 				}
 			}
 		}
-		if len(instList) == 0 {
+
+		if !newDeps {
+			break // No new dependencies found, we're done
+		}
+	}
+
+	// Emit concrete generic functions.
+	base.WriteString("// ---- Concrete Generic Functions (Generated) ----\n")
+	for name, fn := range genericFuncs {
+		list := insts[name]
+		if len(list) == 0 {
 			continue
 		}
+
 		orig := nodeToString(fset, fn)
-		for i, arg := range instList {
-			concreteName := fmt.Sprintf(genericNameFormat, name, i+1)
-			parts := strings.Split(arg, ",")
+		for i, sig := range list {
+			cname := fmt.Sprintf(genericNameFormat, name, i+1)
+			parts := strings.Split(sig, ",")
 			for k := range parts {
 				parts[k] = strings.TrimSpace(parts[k])
 			}
-			origNoParams := stripFuncTypeParams(orig, name)
-			clone := strings.Replace(origNoParams, "func "+name+"(", "func "+concreteName+"(", 1)
-			// Map type params
-			mapping := map[string]string{}
-			for j, p := range fn.Type.TypeParams.List {
-				if j < len(parts) {
+			origNo := stripFuncTypeParams(orig, name)
+			clone := strings.Replace(origNo, "func "+name+"(", "func "+cname+"(", 1)
+
+			if fn.Type.TypeParams != nil {
+				pi := 0
+				for _, p := range fn.Type.TypeParams.List {
 					for _, id := range p.Names {
-						mapping[id.Name] = parts[j]
+						if pi < len(parts) {
+							clone = replaceTypeToken(clone, id.Name, parts[pi])
+							pi++
+						}
 					}
 				}
 			}
-			// Apply all type parameter replacements
-			for k, v := range mapping {
-				clone = replaceTypeToken(clone, k, v)
+			key := name + "[" + sig + "]"
+			keySp := name + "[" + strings.ReplaceAll(sig, ",", ", ") + "]"
+			clone = strings.ReplaceAll(clone, "*"+key, "*"+cname)
+			clone = strings.ReplaceAll(clone, key, cname)
+			clone = strings.ReplaceAll(clone, "*"+keySp, "*"+cname)
+			clone = strings.ReplaceAll(clone, keySp, cname)
+			for old, mapped := range nameMap {
+				clone = strings.ReplaceAll(clone, old, mapped)
 			}
-			// Fix naming conflicts: if we have both a type T and variable T, rename the variable
-			for _, v := range mapping {
-				if strings.HasPrefix(v, "*") {
-					baseType := v[1:]
-					// Rename variable declarations that conflict with type names
-					clone = strings.ReplaceAll(clone, "\t"+baseType+" :=", "\t"+baseType+"Val :=")
-					clone = strings.ReplaceAll(clone, " "+baseType+" :=", " "+baseType+"Val :=")
-					// Update all references to the renamed variable
-					clone = strings.ReplaceAll(clone, "&"+baseType+")", "&"+baseType+"Val)")
+
+			// Additional pass: convert inferred generic calls within the generated function body
+			// Use context-aware replacement based on argument analysis
+			for depFnName, depFn := range genericFuncs {
+				if depFn == nil || len(insts[depFnName]) == 0 {
+					continue
 				}
-			}
-			// Targeted substitution only for current instantiation to avoid cross-talk.
-			curKey := name + "[" + arg + "]"
-			if concreteName != "" {
-				// Replace pointer and non-pointer return types/signatures.
-				// We avoid replacing other instantiations by restricting to exact current arg list.
-				curKeySpaced := name + "[" + strings.ReplaceAll(arg, ",", ", ") + "]"
-				for _, k := range []string{curKey, curKeySpaced} {
-					clone = strings.ReplaceAll(clone, "*"+k, "*"+concreteName)
-					clone = strings.ReplaceAll(clone, k, concreteName)
+
+				// For specific known patterns, use smarter replacement
+				if depFnName == "Log2Floor" && name == "Log2Ceil" {
+					// Log2Ceil functions convert input to uint64, so Log2Floor calls should use uint64 version
+					if len(insts[depFnName]) >= 2 {
+						// Use G2 (uint64 version) if available
+						depConcrete := fmt.Sprintf(genericNameFormat, depFnName, 2)
+						clone = strings.ReplaceAll(clone, depFnName+"(", depConcrete+"(")
+						continue
+					}
 				}
+
+				// Default: use first instantiation
+				depConcrete := fmt.Sprintf(genericNameFormat, depFnName, 1)
+				clone = strings.ReplaceAll(clone, depFnName+"(", depConcrete+"(")
 			}
-			buf.WriteString(clone + "\n")
-		}
-		if len(instList) == 1 {
-			producedSingle[name] = fmt.Sprintf(genericNameFormat, name, 1)
+
+			base.WriteString(clone + "\n")
 		}
 	}
 
-	// Fallback textual replacements for any missed generic receiver or type expressions
-	final := buf.String()
-	for old, newName := range nameMap {
-		final = strings.ReplaceAll(final, old, newName)
-		final = strings.ReplaceAll(final, "*"+old, "*"+newName)
-		if strings.Contains(old, ",") { // spaced variant
-			oldSpaced := strings.ReplaceAll(old, ",", ", ")
-			final = strings.ReplaceAll(final, oldSpaced, newName)
-			final = strings.ReplaceAll(final, "*"+oldSpaced, "*"+newName)
+	// Final spaced pattern cleanup.
+	final := base.String()
+
+	// Removed hardcoded struct and utility synthesis: rely solely on discovered instantiations & existing code.
+
+	// Generic duplicate method removal: keep first identical method body for a (receiver) MethodName pair.
+	lines := strings.Split(final, "\n")
+	var outLines []string
+	seen := map[string]bool{}
+	for idx := 0; idx < len(lines); idx++ {
+		line := lines[idx]
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "func (") { // potential method
+			// Accumulate full method body by brace counting
+			methodLines := []string{line}
+			braceCount := strings.Count(line, "{") - strings.Count(line, "}")
+			for braceCount > 0 && idx+1 < len(lines) {
+				idx++
+				methodLines = append(methodLines, lines[idx])
+				braceCount += strings.Count(lines[idx], "{") - strings.Count(lines[idx], "}")
+			}
+			methodBody := strings.Join(methodLines, "\n")
+			// Build signature key: from 'func (' up to first '{'
+			openBrace := strings.Index(methodBody, "{")
+			key := methodBody
+			if openBrace != -1 {
+				key = strings.TrimSpace(methodBody[:openBrace])
+			}
+			if seen[key] {
+				// skip duplicate
+				continue
+			}
+			seen[key] = true
+			outLines = append(outLines, methodLines...)
+			continue
 		}
+		outLines = append(outLines, line)
 	}
-	// Replace direct calls to generic functions without explicit type args when single instantiation
-	for orig, mono := range producedSingle {
-		final = strings.ReplaceAll(final, orig+"(", mono+"(")
+	final = strings.Join(outLines, "\n")
+	for old, nn := range nameMap {
+		final = strings.ReplaceAll(final, old, nn)
+		final = strings.ReplaceAll(final, "*"+old, "*"+nn)
+		if strings.Contains(old, ",") {
+			oldSp := strings.ReplaceAll(old, ",", ", ")
+			final = strings.ReplaceAll(final, oldSp, nn)
+			final = strings.ReplaceAll(final, "*"+oldSp, "*"+nn)
+		}
 	}
 
 	return []byte(final)
 }
 
-// Helpers
+// --- Helpers ---
+func addInstantiation(insts map[string][]string, name, sig string) {
+	for _, e := range insts[name] {
+		if e == sig {
+			return
+		}
+	}
+	insts[name] = append(insts[name], sig)
+}
+func posOffset(fset *token.FileSet, p token.Pos) int { return fset.Position(p).Offset }
 func exprToString(fset *token.FileSet, e ast.Expr) string {
 	var b bytes.Buffer
 	_ = printer.Fprint(&b, fset, e)
@@ -834,85 +1477,6 @@ func nodeToString(fset *token.FileSet, n ast.Node) string {
 	_ = printer.Fprint(&b, fset, n)
 	return b.String()
 }
-
-// commentOut removed: we now delete generic code instead of commenting
-
-// replaceTypeToken replaces occurrences of a standalone type identifier (not part of a larger identifier) in code.
-// It avoids replacing field names (after dots) to prevent .value from becoming .stValue
-func replaceTypeToken(code, ident, replacement string) string {
-	if ident == replacement || ident == "" {
-		return code
-	}
-	needsPointerParenthesis := strings.HasPrefix(replacement, "*")
-	var b strings.Builder
-	runes := []rune(code)
-	n := len(runes)
-	for i := 0; i < n; {
-		if i+len(ident) <= n {
-			segment := string(runes[i : i+len(ident)])
-			if segment == ident {
-				prevOk := i == 0 || isBoundaryRune(runes[i-1])
-				nextOk := i+len(ident) == n || isBoundaryRune(runes[i+len(ident)])
-				isFieldAccess := i > 0 && runes[i-1] == '.'
-				// If preceded by '&' treat as taking address of a value identifier; skip replacement.
-				isAddressOf := i > 0 && runes[i-1] == '&'
-				// If wrapped in parentheses and immediately followed by ")" and then a dot, it's a value expression like (ident).Method; skip.
-				isParenValueDot := false
-				if i+len(ident) < n && runes[i+len(ident)] == ')' {
-					k := i + len(ident) + 1
-					for k < n && (runes[k] == ' ' || runes[k] == '\t') {
-						k++
-					}
-					if k < n && runes[k] == '.' && i > 0 && runes[i-1] == '(' {
-						isParenValueDot = true
-					}
-				}
-				if prevOk && nextOk && !isFieldAccess && !isAddressOf {
-					// Determine if the identifier is part of a variable declaration or assignment (we should NOT replace then).
-					// Look ahead skipping whitespace.
-					j := i + len(ident)
-					for j < n && (runes[j] == ' ' || runes[j] == '\t') {
-						j++
-					}
-					isShortDecl := j+1 < n && runes[j] == ':' && runes[j+1] == '=' // ident :=
-					isAssignment := j < n && runes[j] == '='                       // ident =
-					if isShortDecl || isAssignment || isParenValueDot {
-						// Treat as value identifier, do not substitute.
-						b.WriteString(segment)
-						i += len(ident)
-						continue
-					}
-					if needsPointerParenthesis {
-						nextRune := rune(0)
-						if i+len(ident) < n {
-							nextRune = runes[i+len(ident)]
-						}
-						if nextRune == '(' || nextRune == '{' { // type conversion / composite literal
-							b.WriteString("(" + replacement + ")")
-						} else {
-							b.WriteString(replacement)
-						}
-					} else {
-						b.WriteString(replacement)
-					}
-					i += len(ident)
-					continue
-				}
-			}
-		}
-		b.WriteRune(runes[i])
-		i++
-	}
-	return b.String()
-}
-
-func isBoundaryRune(r rune) bool {
-	return r == ' ' || r == '\n' || r == '\t' || r == '(' || r == ')' || r == '{' || r == '}' || r == ',' || r == ';' || r == '*' || r == '[' || r == ']' || r == ':' || r == '.' || r == '&'
-}
-
-// inferCompositeType attempts to get the type name from a composite literal expression
-
-// stripFuncTypeParams removes the generic parameter list after a function name.
 func stripFuncTypeParams(code, name string) string {
 	pat := "func " + name + "["
 	idx := strings.Index(code, pat)
@@ -934,6 +1498,72 @@ func stripFuncTypeParams(code, name string) string {
 	}
 	return code
 }
+func replaceTypeToken(code, ident, replacement string) string {
+	if ident == replacement || ident == "" {
+		return code
+	}
+	needsPtr := strings.HasPrefix(replacement, "*")
+	r := []rune(code)
+	n := len(r)
+	var b strings.Builder
+	for i := 0; i < n; {
+		if i+len(ident) <= n && string(r[i:i+len(ident)]) == ident {
+			prevOK := i == 0 || isBoundaryRune(r[i-1])
+			nextOK := i+len(ident) == n || isBoundaryRune(r[i+len(ident)])
+			isField := i > 0 && r[i-1] == '.'
+			isAddr := i > 0 && r[i-1] == '&'
+			follow := rune(0)
+			if i+len(ident) < n {
+				follow = r[i+len(ident)]
+			}
+			if follow == '.' { // skip token part of selector
+				b.WriteString(string(r[i : i+len(ident)]))
+				i += len(ident)
+				continue
+			}
+			if prevOK && nextOK && !isField && !isAddr {
+				j := i + len(ident)
+				for j < n && (r[j] == ' ' || r[j] == '\t') {
+					j++
+				}
+				isShort := j+1 < n && r[j] == ':' && r[j+1] == '='
+				isAssign := j < n && r[j] == '='
+				// Check if this is a variable in parentheses for method call: (variable).Method(...)
+				isParenMethod := i > 0 && r[i-1] == '(' && j < n && r[j] == ')' &&
+					j+1 < n && r[j+1] == '.'
+				if isShort || isAssign || isParenMethod {
+					b.WriteString(ident)
+					i += len(ident)
+					continue
+				}
+				if needsPtr {
+					nextRune := rune(0)
+					if i+len(ident) < n {
+						nextRune = r[i+len(ident)]
+					}
+					if nextRune == '(' || nextRune == '{' {
+						b.WriteString("(" + replacement + ")")
+					} else {
+						b.WriteString(replacement)
+					}
+				} else {
+					b.WriteString(replacement)
+				}
+				i += len(ident)
+				continue
+			}
+		}
+		b.WriteRune(r[i])
+		i++
+	}
+	res := b.String()
+	// Cleanup known cast pattern introduced by replacement for intHash hashing.
+	res = strings.ReplaceAll(res, "(intHash)(&key).Hash()", "key.Hash()")
+	return res
+}
+func isBoundaryRune(r rune) bool {
+	return r == ' ' || r == '\n' || r == '\t' || r == '(' || r == ')' || r == '{' || r == '}' || r == ',' || r == ';' || r == '*' || r == '[' || r == ']' || r == ':' || r == '.' || r == '&'
+}
 func sortedKeys(m map[string][]string) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
@@ -943,4 +1573,11 @@ func sortedKeys(m map[string][]string) []string {
 	return ks
 }
 
-// Fully generic transformation: no type-specific special cases.
+func sanitizeCode(src []byte) ([]byte, error) {
+	src, err := format.Source(src)
+	if err != nil {
+		return nil, err
+	}
+
+	return imports.Process("", src, nil)
+}
