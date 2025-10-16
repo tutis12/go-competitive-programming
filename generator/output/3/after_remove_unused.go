@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"runtime"
+	"slices"
 	"unsafe"
 )
 
@@ -154,13 +155,12 @@ const (
 )
 
 type (
-	HashMapG1 struct {
-		buckets []bucketG1
+	HashMapG2 struct {
+		buckets [][]entryG1
 		logSize int
 		size    int
 		oddSalt uint64
 	}
-
 	STG1 struct {
 		log2n      int
 		n          int
@@ -168,98 +168,36 @@ type (
 		zeroValue  stValue
 		zeroUpdate lazy
 	}
-	intHasher int
-	lazy      struct {
-		addDP int
-	}
-
-	nodeG1 struct {
-		value  stValue
-		update lazy
-	}
-	stValue struct {
-		minA  int
-		minDP int
-	}
-
-	HashMapG2 struct {
-		buckets []bucketG1
-		logSize int
-		size    int
-		oddSalt uint64
-	}
-
-	bucketG1 struct {
-		arr       [][subBucketSize]entryG1
-		lastCount uint8
-	}
 	entryG1 struct {
 		hash  uint64
 		key   int
 		value int
 	}
 	intHash int
+
+	intHasher int
+	lazy      struct {
+		addDP int
+	}
+	stValue struct {
+		minA  int
+		minDP int
+	}
+
+	HashMapG1 struct {
+		buckets [][]entryG1
+		logSize int
+		size    int
+		oddSalt uint64
+	}
+
+	nodeG1 struct {
+		value  stValue
+		update lazy
+	}
 )
 
-const subBucketSize = 4
-
-func IsPowerOf2G1(x int) bool {
-	x64 := uint64(x)
-	return x64 != 0 && (x64&(x64-1)) == 0
-}
-
-func Log2CeilG1(x int) int {
-	x64 := uint64(x)
-	if x64 == 0 {
-		panic("Log2(0) is undefined")
-	}
-	if x64 == 1 {
-		return 0
-	}
-	return 1 + Log2FloorG1(x64-1)
-}
-
-func NewHashMapG1(
-	size int,
-) *HashMapG1 {
-	logSize := Log2CeilG1(size*2/subBucketSize + 3)
-	return &HashMapG1{
-		buckets: make([]bucketG1, 1<<logSize),
-		logSize: logSize,
-		size:    0,
-		oddSalt: rand.Uint64() | 1,
-	}
-}
-
-func NewSTG1(
-	init func(int) stValue,
-	size int,
-	zeroValue stValue,
-	zeroUpdate lazy,
-) *STG1 {
-	if size <= 0 {
-		panic("size must be positive")
-	}
-	log2n := Log2CeilG1(size)
-	n := 1 << log2n
-	arr := make([]nodeG1, 2*n)
-	for i := range size {
-		arr[n+i] = nodeG1{init(i), zeroUpdate}
-	}
-	for i := size; i < n; i++ {
-		arr[n+i] = nodeG1{zeroValue, zeroUpdate}
-	}
-	for i := n - 1; i > 0; i-- {
-		arr[i] = nodeG1{arr[2*i].value.Merge(arr[2*i+1].value), zeroUpdate}
-	}
-	return &STG1{
-		log2n:      log2n,
-		n:          n,
-		arr:        arr,
-		zeroValue:  zeroValue,
-		zeroUpdate: zeroUpdate,
-	}
-}
+const hashMapCheckHashes = false
 
 func solveC(
 	stdin *Reader,
@@ -269,6 +207,41 @@ func solveC(
 	for range t {
 		solveTestC(stdin, stdout)
 	}
+}
+
+func IsPowerOf2G1(x int) bool {
+	x64 := uint64(x)
+	return x64 != 0 && (x64&(x64-1)) == 0
+}
+
+func Log2FloorG1(x uint64) int {
+	x64 := uint64(x)
+	if x64 == 0 {
+		panic("Log2(0) is undefined")
+	}
+	return 63 - bits.LeadingZeros64(x64)
+}
+
+func NewHashMapG1(
+	size int,
+) *HashMapG1 {
+	logSize := Log2CeilG1(size*2 + 1)
+	return &HashMapG1{
+		buckets: make([][]entryG1, 1<<logSize),
+		logSize: logSize,
+		size:    0,
+		oddSalt: rand.Uint64() | 1,
+	}
+}
+
+func ReverseBits64(x uint64) uint64 {
+	x = (x>>1)&0x5555555555555555 | (x&0x5555555555555555)<<1
+	x = (x>>2)&0x3333333333333333 | (x&0x3333333333333333)<<2
+	x = (x>>4)&0x0F0F0F0F0F0F0F0F | (x&0x0F0F0F0F0F0F0F0F)<<4
+	x = (x>>8)&0x00FF00FF00FF00FF | (x&0x00FF00FF00FF00FF)<<8
+	x = (x>>16)&0x0000FFFF0000FFFF | (x&0x0000FFFF0000FFFF)<<16
+	x = (x>>32)&0x00000000FFFFFFFF | (x&0x00000000FFFFFFFF)<<32
+	return x
 }
 
 func solveTestC(
@@ -320,26 +293,84 @@ func solveTestC(
 	stdout.Int(dp.Get(n-1), '\n')
 }
 
-func Log2FloorG1(x uint64) int {
+func Log2CeilG1(x int) int {
 	x64 := uint64(x)
 	if x64 == 0 {
 		panic("Log2(0) is undefined")
 	}
-	return 63 - bits.LeadingZeros64(x64)
+	if x64 == 1 {
+		return 0
+	}
+	return 1 + Log2FloorG1(x64-1)
 }
 
-func ReverseBits64(x uint64) uint64 {
-	x = (x>>1)&0x5555555555555555 | (x&0x5555555555555555)<<1
-	x = (x>>2)&0x3333333333333333 | (x&0x3333333333333333)<<2
-	x = (x>>4)&0x0F0F0F0F0F0F0F0F | (x&0x0F0F0F0F0F0F0F0F)<<4
-	x = (x>>8)&0x00FF00FF00FF00FF | (x&0x00FF00FF00FF00FF)<<8
-	x = (x>>16)&0x0000FFFF0000FFFF | (x&0x0000FFFF0000FFFF)<<16
-	x = (x>>32)&0x00000000FFFFFFFF | (x&0x00000000FFFFFFFF)<<32
-	return x
+func NewSTG1(
+	init func(int) stValue,
+	size int,
+	zeroValue stValue,
+	zeroUpdate lazy,
+) *STG1 {
+	if size <= 0 {
+		panic("size must be positive")
+	}
+	log2n := Log2CeilG1(size)
+	n := 1 << log2n
+	arr := make([]nodeG1, 2*n)
+	for i := range size {
+		arr[n+i] = nodeG1{init(i), zeroUpdate}
+	}
+	for i := size; i < n; i++ {
+		arr[n+i] = nodeG1{zeroValue, zeroUpdate}
+	}
+	for i := n - 1; i > 0; i-- {
+		arr[i] = nodeG1{arr[2*i].value.Merge(arr[2*i+1].value), zeroUpdate}
+	}
+	return &STG1{
+		log2n:      log2n,
+		n:          n,
+		arr:        arr,
+		zeroValue:  zeroValue,
+		zeroUpdate: zeroUpdate,
+	}
 }
 
-func (top lazy) Push(existing *lazy) {
-	existing.addDP += top.addDP
+func (up lazy) ApplyUpdate(val *stValue) {
+	val.minDP += up.addDP
+}
+
+func (h intHash) Hash() uint64 {
+	return uint64(h)
+}
+
+func (x intHasher) Hash() uint64 {
+	return uint64(x)
+}
+
+func (hm *HashMapG1) Hash(key int) uint64 {
+	hash := (*(*intHash)(unsafe.Pointer(&key))).Hash()
+	hash *= hm.oddSalt
+	hash = ReverseBits64(hash)
+	return hash
+}
+
+func (hm *HashMapG2) Hash(key int) uint64 {
+	hash := (*(*intHasher)(unsafe.Pointer(&key))).Hash()
+	hash *= hm.oddSalt
+	hash = ReverseBits64(hash)
+	return hash
+}
+
+func (st STG1) SetValue(
+	i int,
+	val stValue,
+) {
+	if i < 0 || i >= st.n {
+		panic("index out of bounds")
+	}
+	st.pushUpdates(i)
+	st.arr[i+st.n].value = val
+	st.arr[i+st.n].update = st.zeroUpdate
+	st.rebuild(i)
 }
 
 func (st STG1) pushUpdates(
@@ -360,8 +391,121 @@ func (st STG1) pushUpdates(
 	st.arr[i].update = st.zeroUpdate
 }
 
-func (r *Reader) seek() {
-	r.from++
+func (hm *HashMapG1) resize() {
+	hm.buckets = append(hm.buckets, make([][]entryG1, 1<<hm.logSize)...)
+	for i, bucket := range hm.buckets[:1<<hm.logSize] {
+		cntMove := 0
+		for i := 0; i < len(bucket)-cntMove; {
+			e := bucket[i]
+			if e.hash&(1<<hm.logSize) != 0 {
+				j := len(bucket) - 1 - cntMove
+				bucket[i], bucket[j] = bucket[j], bucket[i]
+				cntMove++
+			} else {
+				i++
+			}
+		}
+		odds := bucket[len(bucket)-cntMove:]
+		evens := bucket[:len(bucket)-cntMove]
+		if len(odds) <= len(evens) {
+			odds = slices.Clone(odds)
+		} else {
+			evens = slices.Clone(evens)
+		}
+		hm.buckets[i+(1<<hm.logSize)] = odds
+		hm.buckets[i] = evens
+	}
+	hm.logSize++
+}
+
+func (hm *HashMapG2) resize() {
+	hm.buckets = append(hm.buckets, make([][]entryG1, 1<<hm.logSize)...)
+	for i, bucket := range hm.buckets[:1<<hm.logSize] {
+		cntMove := 0
+		for i := 0; i < len(bucket)-cntMove; {
+			e := bucket[i]
+			if e.hash&(1<<hm.logSize) != 0 {
+				j := len(bucket) - 1 - cntMove
+				bucket[i], bucket[j] = bucket[j], bucket[i]
+				cntMove++
+			} else {
+				i++
+			}
+		}
+		odds := bucket[len(bucket)-cntMove:]
+		evens := bucket[:len(bucket)-cntMove]
+		if len(odds) <= len(evens) {
+			odds = slices.Clone(odds)
+		} else {
+			evens = slices.Clone(evens)
+		}
+		hm.buckets[i+(1<<hm.logSize)] = odds
+		hm.buckets[i] = evens
+	}
+	hm.logSize++
+}
+
+func (hm *HashMapG1) Get(key int) int {
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value
+		}
+	}
+	var zero int
+	return zero
+}
+
+func (hm *HashMapG2) Get(key int) int {
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value
+		}
+	}
+	var zero int
+	return zero
+}
+
+func (st STG1) Get(
+	l, r int,
+) stValue {
+	l = max(l, 0)
+	r = min(r, st.n-1)
+	if l > r {
+		return st.zeroValue
+	}
+	st.pushUpdates(l)
+	st.pushUpdates(r)
+	summedL := st.zeroValue
+	summedR := st.zeroValue
+	l, r = l+st.n, r+st.n
+	for l <= r {
+		if l%2 == 1 {
+
+			(st.arr[l].update).ApplyUpdate(&st.arr[l].value)
+			summedL = summedL.Merge(st.arr[l].value)
+			l = l/2 + 1
+		} else {
+			l = l / 2
+		}
+		if r%2 == 0 {
+			(st.arr[r].update).ApplyUpdate(&st.arr[r].value)
+			summedR = st.arr[r].value.Merge(summedR)
+			r = r/2 - 1
+		} else {
+			r = r / 2
+		}
+	}
+	return summedL.Merge(summedR)
+}
+
+func (a stValue) Merge(b stValue) stValue {
+	return stValue{minA: min(a.minA, b.minA), minDP: min(a.minDP, b.minDP)}
+}
+
+func (top lazy) Push(existing *lazy) {
+	existing.addDP += top.addDP
 }
 
 func (w *Writer) bytes(c []byte) {
@@ -375,261 +519,8 @@ func (w *Writer) bytes(c []byte) {
 	}
 }
 
-func (a stValue) Merge(b stValue) stValue {
-	return stValue{minA: min(a.minA, b.minA), minDP: min(a.minDP, b.minDP)}
-}
-
-func (up lazy) ApplyUpdate(val *stValue) {
-	val.minDP += up.addDP
-}
-
-func (st STG1) LongestRangeWherePredicate(
-	rMax int,
-	predicate func(stValue) bool,
-) (int, bool) {
-	if rMax < 0 || rMax >= st.n {
-		panic("invalid rMax")
-	}
-
-	st.pushUpdates(rMax)
-	i := rMax + st.n
-	if !predicate(st.arr[i].value) {
-		return -1, false
-	}
-	summedValue := st.zeroValue
-	for i > 0 {
-		arrVal := st.arr[i]
-		(arrVal.update).ApplyUpdate(&arrVal.value)
-		val := arrVal.value.Merge(summedValue)
-		if predicate(val) {
-			if IsPowerOf2G1(i) {
-				return 0, true
-			}
-			if i%2 == 0 {
-				i = i/2 - 1
-				summedValue = val.Merge(summedValue)
-			} else {
-				i = i / 2
-			}
-		} else {
-			break
-		}
-	}
-
-	upd := st.arr[i].update
-	for i < st.n {
-		val := st.arr[2*i+1]
-		(upd).Push(&val.update)
-		(upd).ApplyUpdate(&val.value)
-		combined := val.value.Merge(summedValue)
-		if predicate(combined) {
-			summedValue = combined
-			i = 2 * i
-		} else {
-			upd = val.update
-			i = 2*i + 1
-		}
-	}
-	return i - st.n + 1, true
-}
-
-func (st STG1) SetValue(
-	i int,
-	val stValue,
-) {
-	if i < 0 || i >= st.n {
-		panic("index out of bounds")
-	}
-	st.pushUpdates(i)
-	st.arr[i+st.n].value = val
-	st.arr[i+st.n].update = st.zeroUpdate
-	st.rebuild(i)
-}
-
-func (r *Reader) peek() (byte, bool) {
-	if r.from == r.to {
-		if !r.read() {
-			return 0, false
-		}
-	}
-	return r.bytes[r.from], true
-}
-
-func (st STG1) rebuild(
-	i int,
-) {
-	i += st.n
-	i /= 2
-	for i != 0 {
-		left := st.arr[2*i]
-		(left.update).ApplyUpdate(&left.value)
-		right := st.arr[2*i+1]
-		(right.update).ApplyUpdate(&right.value)
-		st.arr[i].value = left.value.Merge(right.value)
-		i = i / 2
-	}
-}
-
-func (hm *HashMapG1) resizeIfNeeded() {
-	if hm.size <= (1<<hm.logSize)*subBucketSize/2 {
-		return
-	}
-	hm.buckets = append(hm.buckets, make([]bucketG1, 1<<hm.logSize)...)
-	for i, current := range hm.buckets[:1<<hm.logSize] {
-		newBucket := make([][subBucketSize]entryG1, 0)
-		newI := -1
-		newJ := subBucketSize - 1
-		currI := -1
-		currJ := subBucketSize - 1
-		for _, sub := range current.arr {
-			for _, e := range sub {
-				if e.hash == 0 {
-					continue
-				}
-				if e.hash&(1<<hm.logSize) == 0 {
-					if currJ == subBucketSize-1 {
-						currJ = 0
-						currI++
-					} else {
-						currJ++
-					}
-					current.arr[currI][currJ] = e
-				} else {
-					if newJ == subBucketSize-1 {
-						newJ = 0
-						newI++
-						newBucket = append(newBucket, [subBucketSize]entryG1{})
-					} else {
-						newJ++
-					}
-					newBucket[newI][newJ] = e
-				}
-			}
-		}
-		hm.buckets[i].arr = current.arr[:currI+1]
-		hm.buckets[i].lastCount = uint8(currJ + 1)
-		hm.buckets[i+(1<<hm.logSize)].arr = newBucket
-		hm.buckets[i+(1<<hm.logSize)].lastCount = uint8(newJ + 1)
-	}
-	hm.logSize++
-}
-
-func (hm *HashMapG2) resizeIfNeeded() {
-	if hm.size <= (1<<hm.logSize)*subBucketSize/2 {
-		return
-	}
-	hm.buckets = append(hm.buckets, make([]bucketG1, 1<<hm.logSize)...)
-	for i, current := range hm.buckets[:1<<hm.logSize] {
-		newBucket := make([][subBucketSize]entryG1, 0)
-		newI := -1
-		newJ := subBucketSize - 1
-		currI := -1
-		currJ := subBucketSize - 1
-		for _, sub := range current.arr {
-			for _, e := range sub {
-				if e.hash == 0 {
-					continue
-				}
-				if e.hash&(1<<hm.logSize) == 0 {
-					if currJ == subBucketSize-1 {
-						currJ = 0
-						currI++
-					} else {
-						currJ++
-					}
-					current.arr[currI][currJ] = e
-				} else {
-					if newJ == subBucketSize-1 {
-						newJ = 0
-						newI++
-						newBucket = append(newBucket, [subBucketSize]entryG1{})
-					} else {
-						newJ++
-					}
-					newBucket[newI][newJ] = e
-				}
-			}
-		}
-		hm.buckets[i].arr = current.arr[:currI+1]
-		hm.buckets[i].lastCount = uint8(currJ + 1)
-		hm.buckets[i+(1<<hm.logSize)].arr = newBucket
-		hm.buckets[i+(1<<hm.logSize)].lastCount = uint8(newJ + 1)
-	}
-	hm.logSize++
-}
-
-func (hm *HashMapG1) Get2(key int) (int, bool) {
-	hash := hm.Hash(key)
-	bucket := hm.buckets[hash%(1<<hm.logSize)]
-
-	for i, sub := range bucket.arr {
-		if i == len(bucket.arr)-1 {
-			for _, e := range sub[:bucket.lastCount] {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		} else {
-			for _, e := range sub {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		}
-	}
-	var zero int
-	return zero, false
-}
-
-func (hm *HashMapG2) Get2(key int) (int, bool) {
-	hash := hm.Hash(key)
-	bucket := hm.buckets[hash%(1<<hm.logSize)]
-
-	for i, sub := range bucket.arr {
-		if i == len(bucket.arr)-1 {
-			for _, e := range sub[:bucket.lastCount] {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		} else {
-			for _, e := range sub {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		}
-	}
-	var zero int
-	return zero, false
-}
-
-func (h intHash) Hash() uint64 {
-	return uint64(h)
-}
-
-func (x intHasher) Hash() uint64 {
-	return uint64(x)
-}
-
-func (hm *HashMapG1) Hash(key int) uint64 {
-	hash := (*(*intHash)(unsafe.Pointer(&key))).Hash()
-	hash *= hm.oddSalt
-	hash = ReverseBits64(hash)
-	if hash == 0 {
-		hash = 1
-	}
-	return hash
-}
-
-func (hm *HashMapG2) Hash(key int) uint64 {
-	hash := (*(*intHasher)(unsafe.Pointer(&key))).Hash()
-	hash *= hm.oddSalt
-	hash = ReverseBits64(hash)
-	if hash == 0 {
-		hash = 1
-	}
-	return hash
+func (r *Reader) seek() {
+	r.from++
 }
 
 func (r *Reader) Int() int {
@@ -696,112 +587,121 @@ func (w *Writer) Int(value int, c byte) {
 	w.bytes(w.intBuffer[i+1:])
 }
 
+func (st STG1) LongestRangeWherePredicate(
+	rMax int,
+	predicate func(stValue) bool,
+) (int, bool) {
+	if rMax < 0 || rMax >= st.n {
+		panic("invalid rMax")
+	}
+
+	st.pushUpdates(rMax)
+	i := rMax + st.n
+	if !predicate(st.arr[i].value) {
+		return -1, false
+	}
+	summedValue := st.zeroValue
+	for i > 0 {
+		arrVal := st.arr[i]
+		(arrVal.update).ApplyUpdate(&arrVal.value)
+		val := arrVal.value.Merge(summedValue)
+		if predicate(val) {
+			if IsPowerOf2G1(i) {
+				return 0, true
+			}
+			if i%2 == 0 {
+				i = i/2 - 1
+				summedValue = val.Merge(summedValue)
+			} else {
+				i = i / 2
+			}
+		} else {
+			break
+		}
+	}
+
+	upd := st.arr[i].update
+	for i < st.n {
+		val := st.arr[2*i+1]
+		(upd).Push(&val.update)
+		(upd).ApplyUpdate(&val.value)
+		combined := val.value.Merge(summedValue)
+		if predicate(combined) {
+			summedValue = combined
+			i = 2 * i
+		} else {
+			upd = val.update
+			i = 2*i + 1
+		}
+	}
+	return i - st.n + 1, true
+}
+
 func (hm *HashMapG1) Set(key int, value int) {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		for i := range subBucketSize {
-			e := &sub[i]
-			if e.hash == hash && e.key == key {
-				e.value = value
-				return
-			}
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			e.value = value
+			return
 		}
 	}
-	if bucket.lastCount < subBucketSize {
-		if len(bucket.arr) == 0 {
-			bucket.arr = append(bucket.arr, [subBucketSize]entryG1{})
-		}
-		bucket.arr[len(bucket.arr)-1][bucket.lastCount] = entryG1{hash: hash, key: key, value: value}
-		bucket.lastCount++
-		hm.buckets[index] = bucket
-	} else {
-		sub := [subBucketSize]entryG1{}
-		sub[0] = entryG1{hash: hash, key: key, value: value}
-
-		bucket.arr = append(bucket.arr, sub)
-		bucket.lastCount = 1
-		hm.buckets[index] = bucket
-	}
+	hm.buckets[index] = append(buckets, entryG1{
+		hash:  hash,
+		key:   key,
+		value: value,
+	})
 	hm.size++
-	hm.resizeIfNeeded()
+	if hm.size*2 > 1<<hm.logSize {
+		hm.resize()
+	}
 }
 
 func (hm *HashMapG2) Set(key int, value int) {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		for i := range subBucketSize {
-			e := &sub[i]
-			if e.hash == hash && e.key == key {
-				e.value = value
-				return
-			}
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			e.value = value
+			return
 		}
 	}
-	if bucket.lastCount < subBucketSize {
-		if len(bucket.arr) == 0 {
-			bucket.arr = append(bucket.arr, [subBucketSize]entryG1{})
-		}
-		bucket.arr[len(bucket.arr)-1][bucket.lastCount] = entryG1{hash: hash, key: key, value: value}
-		bucket.lastCount++
-		hm.buckets[index] = bucket
-	} else {
-		sub := [subBucketSize]entryG1{}
-		sub[0] = entryG1{hash: hash, key: key, value: value}
-
-		bucket.arr = append(bucket.arr, sub)
-		bucket.lastCount = 1
-		hm.buckets[index] = bucket
-	}
+	hm.buckets[index] = append(buckets, entryG1{
+		hash:  hash,
+		key:   key,
+		value: value,
+	})
 	hm.size++
-	hm.resizeIfNeeded()
-}
-
-func (hm *HashMapG1) Get(key int) int {
-	value, _ := hm.Get2(key)
-	return value
-}
-
-func (hm *HashMapG2) Get(key int) int {
-	value, _ := hm.Get2(key)
-	return value
-}
-
-func (st STG1) Get(
-	l, r int,
-) stValue {
-	l = max(l, 0)
-	r = min(r, st.n-1)
-	if l > r {
-		return st.zeroValue
+	if hm.size*2 > 1<<hm.logSize {
+		hm.resize()
 	}
-	st.pushUpdates(l)
-	st.pushUpdates(r)
-	summedL := st.zeroValue
-	summedR := st.zeroValue
-	l, r = l+st.n, r+st.n
-	for l <= r {
-		if l%2 == 1 {
+}
 
-			(st.arr[l].update).ApplyUpdate(&st.arr[l].value)
-			summedL = summedL.Merge(st.arr[l].value)
-			l = l/2 + 1
-		} else {
-			l = l / 2
-		}
-		if r%2 == 0 {
-			(st.arr[r].update).ApplyUpdate(&st.arr[r].value)
-			summedR = st.arr[r].value.Merge(summedR)
-			r = r/2 - 1
-		} else {
-			r = r / 2
+func (r *Reader) peek() (byte, bool) {
+	if r.from == r.to {
+		if !r.read() {
+			return 0, false
 		}
 	}
-	return summedL.Merge(summedR)
+	return r.bytes[r.from], true
+}
+
+func (st STG1) rebuild(
+	i int,
+) {
+	i += st.n
+	i /= 2
+	for i != 0 {
+		left := st.arr[2*i]
+		(left.update).ApplyUpdate(&left.value)
+		right := st.arr[2*i+1]
+		(right.update).ApplyUpdate(&right.value)
+		st.arr[i].value = left.value.Merge(right.value)
+		i = i / 2
+	}
 }
 

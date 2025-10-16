@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -500,80 +501,6 @@ func solveTestG(
 /*output
 
  */
-//package hash_map
-//file ..//hash_map/go
-
-const subBucketSize = 4
-
-
-
-type Hasher interface {
-	Hash() uint64
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//package hash_map
-//file ..//hash_map/hash_map_test.go
-
-type intHasher int
-
-func (x intHasher) Hash() uint64 {
-	return uint64(x)
-}
-
-func BenchmarkHashMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = rand.Int()
-	}
-	b.ResetTimer()
-	hashMap := NewHashMapG2(b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				hashMap.Set(a, a)
-			} else {
-				hashMap.Get(a)
-			}
-		}
-	}
-}
-
-func BenchmarkBuiltinMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = i*37 + 17
-	}
-	b.ResetTimer()
-	m := make(map[int]int, b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				m[a] = a
-			} else {
-				_ = m[a]
-			}
-		}
-	}
-}
-
 //package debug
 //file ..//debug/go
 
@@ -972,6 +899,78 @@ func (w *Writer) Float(f float64) {
 	w.bytes([]byte(str))
 }
 
+//package hash_map
+//file ..//hash_map/go
+
+const hashMapCheckHashes = false
+
+
+
+type Hasher interface {
+	Hash() uint64
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//package hash_map
+//file ..//hash_map/hash_map_test.go
+
+type intHasher int
+
+func (x intHasher) Hash() uint64 {
+	return uint64(x)
+}
+
+func BenchmarkHashMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = rand.Int()
+	}
+	b.ResetTimer()
+	hashMap := NewHashMapG2(b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				hashMap.Set(a, a)
+			} else {
+				hashMap.Get(a)
+			}
+		}
+	}
+}
+
+func BenchmarkBuiltinMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = i*37 + 17
+	}
+	b.ResetTimer()
+	m := make(map[int]int, b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				m[a] = a
+			} else {
+				_ = m[a]
+			}
+		}
+	}
+}
+
 //package segment_tree_iter
 //file ..//segment_tree_iter/go
 
@@ -1060,12 +1059,12 @@ func ReverseBits32(x uint32) uint32 {
 }
 
 // ---- Concrete Types (Generated) ----
-type HashMapG1 struct { buckets []bucketG1
+type HashMapG1 struct { buckets [][]entryG1
 logSize int
 size int
 oddSalt uint64
  }
-type HashMapG2 struct { buckets []bucketG1
+type HashMapG2 struct { buckets [][]entryG1
 logSize int
 size int
 oddSalt uint64
@@ -1075,9 +1074,6 @@ n int
 arr []nodeG1
 zeroValue stValue
 zeroUpdate lazy
- }
-type bucketG1 struct { arr [][subBucketSize]entryG1
-lastCount uint8
  }
 type entryG1 struct { hash uint64
 key int
@@ -1091,45 +1087,39 @@ func (hm *HashMapG1) Hash(key int) uint64 {
 	hash := (*(*intHash)(unsafe.Pointer(&key))).Hash()
 	hash *= hm.oddSalt
 	hash = ReverseBits64(hash)
-	if hash == 0 {
-		hash = 1
-	}
 	return hash
 }
 func (hm *HashMapG2) Hash(key int) uint64 {
 	hash := (*(*intHasher)(unsafe.Pointer(&key))).Hash()
 	hash *= hm.oddSalt
 	hash = ReverseBits64(hash)
-	if hash == 0 {
-		hash = 1
-	}
 	return hash
 }
 func (hm *HashMapG1) Get(key int) int {
-	value, _ := hm.Get2(key)
-	return value
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value
+		}
+	}
+	var zero int
+	return zero
 }
 func (hm *HashMapG2) Get(key int) int {
-	value, _ := hm.Get2(key)
-	return value
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value
+		}
+	}
+	var zero int
+	return zero
 }
 func (hm *HashMapG1) Get2(key int) (int, bool) {
 	hash := hm.Hash(key)
-	bucket := hm.buckets[hash%(1<<hm.logSize)]
-
-	for i, sub := range bucket.arr {
-		if i == len(bucket.arr)-1 {
-			for _, e := range sub[:bucket.lastCount] {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		} else {
-			for _, e := range sub {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value, true
 		}
 	}
 	var zero int
@@ -1137,21 +1127,9 @@ func (hm *HashMapG1) Get2(key int) (int, bool) {
 }
 func (hm *HashMapG2) Get2(key int) (int, bool) {
 	hash := hm.Hash(key)
-	bucket := hm.buckets[hash%(1<<hm.logSize)]
-
-	for i, sub := range bucket.arr {
-		if i == len(bucket.arr)-1 {
-			for _, e := range sub[:bucket.lastCount] {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		} else {
-			for _, e := range sub {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value, true
 		}
 	}
 	var zero int
@@ -1160,27 +1138,14 @@ func (hm *HashMapG2) Get2(key int) (int, bool) {
 func (hm *HashMapG1) Delete(key int) bool {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		if i == len(bucket.arr)-1 {
-			for i := range bucket.lastCount {
-				e := &sub[i]
-				if e.hash == hash && e.key == key {
-					e.hash = 0
-					hm.size--
-					return true
-				}
-			}
-		} else {
-			for i := range subBucketSize {
-				e := &sub[i]
-				if e.hash == hash && e.key == key {
-					e.hash = 0
-					hm.size--
-					return true
-				}
-			}
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			buckets[i] = buckets[len(buckets)-1]
+			hm.buckets[index] = buckets[:len(buckets)-1]
+			hm.size--
+			return true
 		}
 	}
 	return false
@@ -1188,27 +1153,14 @@ func (hm *HashMapG1) Delete(key int) bool {
 func (hm *HashMapG2) Delete(key int) bool {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		if i == len(bucket.arr)-1 {
-			for i := range bucket.lastCount {
-				e := &sub[i]
-				if e.hash == hash && e.key == key {
-					e.hash = 0
-					hm.size--
-					return true
-				}
-			}
-		} else {
-			for i := range subBucketSize {
-				e := &sub[i]
-				if e.hash == hash && e.key == key {
-					e.hash = 0
-					hm.size--
-					return true
-				}
-			}
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			buckets[i] = buckets[len(buckets)-1]
+			hm.buckets[index] = buckets[:len(buckets)-1]
+			hm.size--
+			return true
 		}
 	}
 	return false
@@ -1216,150 +1168,94 @@ func (hm *HashMapG2) Delete(key int) bool {
 func (hm *HashMapG1) Set(key int, value int) {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		for i := range subBucketSize {
-			e := &sub[i]
-			if e.hash == hash && e.key == key {
-				e.value = value
-				return
-			}
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			e.value = value
+			return
 		}
 	}
-	if bucket.lastCount < subBucketSize {
-		if len(bucket.arr) == 0 {
-			bucket.arr = append(bucket.arr, [subBucketSize]entryG1{})
-		}
-		bucket.arr[len(bucket.arr)-1][bucket.lastCount] = entryG1{hash: hash, key: key, value: value}
-		bucket.lastCount++
-		hm.buckets[index] = bucket
-	} else {
-		sub := [subBucketSize]entryG1{}
-		sub[0] = entryG1{hash: hash, key: key, value: value}
-
-		bucket.arr = append(bucket.arr, sub)
-		bucket.lastCount = 1
-		hm.buckets[index] = bucket
-	}
+	hm.buckets[index] = append(buckets, entryG1{
+		hash:	hash,
+		key:	key,
+		value:	value,
+	})
 	hm.size++
-	hm.resizeIfNeeded()
+	if hm.size*2 > 1<<hm.logSize {
+		hm.resize()
+	}
 }
 func (hm *HashMapG2) Set(key int, value int) {
 	hash := hm.Hash(key)
 	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		for i := range subBucketSize {
-			e := &sub[i]
-			if e.hash == hash && e.key == key {
-				e.value = value
-				return
-			}
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			e.value = value
+			return
 		}
 	}
-	if bucket.lastCount < subBucketSize {
-		if len(bucket.arr) == 0 {
-			bucket.arr = append(bucket.arr, [subBucketSize]entryG1{})
-		}
-		bucket.arr[len(bucket.arr)-1][bucket.lastCount] = entryG1{hash: hash, key: key, value: value}
-		bucket.lastCount++
-		hm.buckets[index] = bucket
-	} else {
-		sub := [subBucketSize]entryG1{}
-		sub[0] = entryG1{hash: hash, key: key, value: value}
-
-		bucket.arr = append(bucket.arr, sub)
-		bucket.lastCount = 1
-		hm.buckets[index] = bucket
-	}
+	hm.buckets[index] = append(buckets, entryG1{
+		hash:	hash,
+		key:	key,
+		value:	value,
+	})
 	hm.size++
-	hm.resizeIfNeeded()
-}
-func (hm *HashMapG1) resizeIfNeeded() {
-	if hm.size <= (1<<hm.logSize)*subBucketSize/2 {
-		return
+	if hm.size*2 > 1<<hm.logSize {
+		hm.resize()
 	}
-	hm.buckets = append(hm.buckets, make([]bucketG1, 1<<hm.logSize)...)
-	for i, current := range hm.buckets[:1<<hm.logSize] {
-		newBucket := make([][subBucketSize]entryG1, 0)
-		newI := -1
-		newJ := subBucketSize - 1
-		currI := -1
-		currJ := subBucketSize - 1
-		for _, sub := range current.arr {
-			for _, e := range sub {
-				if e.hash == 0 {
-					continue
-				}
-				if e.hash&(1<<hm.logSize) == 0 {
-					if currJ == subBucketSize-1 {
-						currJ = 0
-						currI++
-					} else {
-						currJ++
-					}
-					current.arr[currI][currJ] = e
-				} else {
-					if newJ == subBucketSize-1 {
-						newJ = 0
-						newI++
-						newBucket = append(newBucket, [subBucketSize]entryG1{})
-					} else {
-						newJ++
-					}
-					newBucket[newI][newJ] = e
-				}
+}
+func (hm *HashMapG1) resize() {
+	hm.buckets = append(hm.buckets, make([][]entryG1, 1<<hm.logSize)...)
+	for i, bucket := range hm.buckets[:1<<hm.logSize] {
+		cntMove := 0
+		for i := 0; i < len(bucket)-cntMove; {
+			e := bucket[i]
+			if e.hash&(1<<hm.logSize) != 0 {
+				j := len(bucket) - 1 - cntMove
+				bucket[i], bucket[j] = bucket[j], bucket[i]
+				cntMove++
+			} else {
+				i++
 			}
 		}
-		hm.buckets[i].arr = current.arr[:currI+1]
-		hm.buckets[i].lastCount = uint8(currJ + 1)
-		hm.buckets[i+(1<<hm.logSize)].arr = newBucket
-		hm.buckets[i+(1<<hm.logSize)].lastCount = uint8(newJ + 1)
+		odds := bucket[len(bucket)-cntMove:]
+		evens := bucket[:len(bucket)-cntMove]
+		if len(odds) <= len(evens) {
+			odds = slices.Clone(odds)
+		} else {
+			evens = slices.Clone(evens)
+		}
+		hm.buckets[i+(1<<hm.logSize)] = odds
+		hm.buckets[i] = evens
 	}
 	hm.logSize++
 }
-func (hm *HashMapG2) resizeIfNeeded() {
-	if hm.size <= (1<<hm.logSize)*subBucketSize/2 {
-		return
-	}
-	hm.buckets = append(hm.buckets, make([]bucketG1, 1<<hm.logSize)...)
-	for i, current := range hm.buckets[:1<<hm.logSize] {
-		newBucket := make([][subBucketSize]entryG1, 0)
-		newI := -1
-		newJ := subBucketSize - 1
-		currI := -1
-		currJ := subBucketSize - 1
-		for _, sub := range current.arr {
-			for _, e := range sub {
-				if e.hash == 0 {
-					continue
-				}
-				if e.hash&(1<<hm.logSize) == 0 {
-					if currJ == subBucketSize-1 {
-						currJ = 0
-						currI++
-					} else {
-						currJ++
-					}
-					current.arr[currI][currJ] = e
-				} else {
-					if newJ == subBucketSize-1 {
-						newJ = 0
-						newI++
-						newBucket = append(newBucket, [subBucketSize]entryG1{})
-					} else {
-						newJ++
-					}
-					newBucket[newI][newJ] = e
-				}
+func (hm *HashMapG2) resize() {
+	hm.buckets = append(hm.buckets, make([][]entryG1, 1<<hm.logSize)...)
+	for i, bucket := range hm.buckets[:1<<hm.logSize] {
+		cntMove := 0
+		for i := 0; i < len(bucket)-cntMove; {
+			e := bucket[i]
+			if e.hash&(1<<hm.logSize) != 0 {
+				j := len(bucket) - 1 - cntMove
+				bucket[i], bucket[j] = bucket[j], bucket[i]
+				cntMove++
+			} else {
+				i++
 			}
 		}
-		hm.buckets[i].arr = current.arr[:currI+1]
-		hm.buckets[i].lastCount = uint8(currJ + 1)
-		hm.buckets[i+(1<<hm.logSize)].arr = newBucket
-		hm.buckets[i+(1<<hm.logSize)].lastCount = uint8(newJ + 1)
+		odds := bucket[len(bucket)-cntMove:]
+		evens := bucket[:len(bucket)-cntMove]
+		if len(odds) <= len(evens) {
+			odds = slices.Clone(odds)
+		} else {
+			evens = slices.Clone(evens)
+		}
+		hm.buckets[i+(1<<hm.logSize)] = odds
+		hm.buckets[i] = evens
 	}
 	hm.logSize++
 }
@@ -1551,9 +1447,9 @@ func IsPowerOf2G1(x int) bool {
 func NewHashMapG1(
 	size int,
 ) *HashMapG1 {
-	logSize := Log2CeilG1(size*2/subBucketSize + 3)
+	logSize := Log2CeilG1(size*2 + 1)
 	return &HashMapG1{
-		buckets:	make([]bucketG1, 1<<logSize),
+		buckets:	make([][]entryG1, 1<<logSize),
 		logSize:	logSize,
 		size:		0,
 		oddSalt:	rand.Uint64() | 1,
@@ -1562,9 +1458,9 @@ func NewHashMapG1(
 func NewHashMapG2(
 	size int,
 ) *HashMapG2 {
-	logSize := Log2CeilG1(size*2/subBucketSize + 3)
+	logSize := Log2CeilG1(size*2 + 1)
 	return &HashMapG2{
-		buckets:	make([]bucketG1, 1<<logSize),
+		buckets:	make([][]entryG1, 1<<logSize),
 		logSize:	logSize,
 		size:		0,
 		oddSalt:	rand.Uint64() | 1,

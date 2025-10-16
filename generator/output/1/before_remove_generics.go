@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -500,234 +501,6 @@ func solveTestG(
 /*output
 
  */
-//package hash_map
-//file ..//hash_map/go
-
-const subBucketSize = 4
-
-type entry[K comparable, V any] struct {
-	hash  uint64
-	key   K
-	value V
-}
-
-type Hasher interface {
-	Hash() uint64
-}
-
-type bucket[K comparable, V any] struct {
-	arr       [][subBucketSize]entry[K, V]
-	lastCount uint8
-}
-
-type HashMap[K comparable, H Hasher, V any] struct {
-	buckets []bucket[K, V]
-	logSize int
-	size    int
-	oddSalt uint64
-}
-
-func NewHashMap[K comparable, H Hasher, V any](
-	size int,
-) *HashMap[K, H, V] {
-	logSize := Log2Ceil(size*2/subBucketSize + 3)
-	return &HashMap[K, H, V]{
-		buckets: make([]bucket[K, V], 1<<logSize),
-		logSize: logSize,
-		size:    0,
-		oddSalt: rand.Uint64() | 1,
-	}
-}
-
-func (hm *HashMap[K, H, V]) Hash(key K) uint64 {
-	hash := (*(*H)(unsafe.Pointer(&key))).Hash()
-	hash *= hm.oddSalt
-	hash = ReverseBits64(hash)
-	if hash == 0 {
-		hash = 1
-	}
-	return hash
-}
-
-func (hm *HashMap[K, H, V]) Get(key K) V {
-	value, _ := hm.Get2(key)
-	return value
-}
-
-func (hm *HashMap[K, H, V]) Get2(key K) (V, bool) {
-	hash := hm.Hash(key)
-	bucket := hm.buckets[hash%(1<<hm.logSize)]
-
-	for i, sub := range bucket.arr {
-		if i == len(bucket.arr)-1 {
-			for _, e := range sub[:bucket.lastCount] {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		} else {
-			for _, e := range sub {
-				if e.hash == hash && e.key == key {
-					return e.value, true
-				}
-			}
-		}
-	}
-	var zero V
-	return zero, false
-}
-
-func (hm *HashMap[K, H, V]) Delete(key K) bool {
-	hash := hm.Hash(key)
-	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		if i == len(bucket.arr)-1 {
-			for i := range bucket.lastCount {
-				e := &sub[i]
-				if e.hash == hash && e.key == key {
-					e.hash = 0
-					hm.size--
-					return true
-				}
-			}
-		} else {
-			for i := range subBucketSize {
-				e := &sub[i]
-				if e.hash == hash && e.key == key {
-					e.hash = 0
-					hm.size--
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func (hm *HashMap[K, H, V]) Set(key K, value V) {
-	hash := hm.Hash(key)
-	index := hash % (1 << hm.logSize)
-	bucket := hm.buckets[index]
-	for i := range bucket.arr {
-		sub := &bucket.arr[i]
-		for i := range subBucketSize {
-			e := &sub[i]
-			if e.hash == hash && e.key == key {
-				e.value = value
-				return
-			}
-		}
-	}
-	if bucket.lastCount < subBucketSize {
-		if len(bucket.arr) == 0 {
-			bucket.arr = append(bucket.arr, [subBucketSize]entry[K, V]{})
-		}
-		bucket.arr[len(bucket.arr)-1][bucket.lastCount] = entry[K, V]{hash: hash, key: key, value: value}
-		bucket.lastCount++
-		hm.buckets[index] = bucket
-	} else {
-		sub := [subBucketSize]entry[K, V]{}
-		sub[0] = entry[K, V]{hash: hash, key: key, value: value}
-
-		bucket.arr = append(bucket.arr, sub)
-		bucket.lastCount = 1
-		hm.buckets[index] = bucket
-	}
-	hm.size++
-	hm.resizeIfNeeded()
-}
-
-func (hm *HashMap[K, H, V]) resizeIfNeeded() {
-	if hm.size <= (1<<hm.logSize)*subBucketSize/2 {
-		return
-	}
-	hm.buckets = append(hm.buckets, make([]bucket[K, V], 1<<hm.logSize)...)
-	for i, current := range hm.buckets[:1<<hm.logSize] {
-		newBucket := make([][subBucketSize]entry[K, V], 0)
-		newI := -1
-		newJ := subBucketSize - 1
-		currI := -1
-		currJ := subBucketSize - 1
-		for _, sub := range current.arr {
-			for _, e := range sub {
-				if e.hash == 0 {
-					continue
-				}
-				if e.hash&(1<<hm.logSize) == 0 {
-					if currJ == subBucketSize-1 {
-						currJ = 0
-						currI++
-					} else {
-						currJ++
-					}
-					current.arr[currI][currJ] = e
-				} else {
-					if newJ == subBucketSize-1 {
-						newJ = 0
-						newI++
-						newBucket = append(newBucket, [subBucketSize]entry[K, V]{})
-					} else {
-						newJ++
-					}
-					newBucket[newI][newJ] = e
-				}
-			}
-		}
-		hm.buckets[i].arr = current.arr[:currI+1]
-		hm.buckets[i].lastCount = uint8(currJ + 1)
-		hm.buckets[i+(1<<hm.logSize)].arr = newBucket
-		hm.buckets[i+(1<<hm.logSize)].lastCount = uint8(newJ + 1)
-	}
-	hm.logSize++
-}
-
-//package hash_map
-//file ..//hash_map/hash_map_test.go
-
-type intHasher int
-
-func (x intHasher) Hash() uint64 {
-	return uint64(x)
-}
-
-func BenchmarkHashMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = rand.Int()
-	}
-	b.ResetTimer()
-	hashMap := NewHashMap[int, intHasher, int](b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				hashMap.Set(a, a)
-			} else {
-				hashMap.Get(a)
-			}
-		}
-	}
-}
-
-func BenchmarkBuiltinMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = i*37 + 17
-	}
-	b.ResetTimer()
-	m := make(map[int]int, b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				m[a] = a
-			} else {
-				_ = m[a]
-			}
-		}
-	}
-}
-
 //package debug
 //file ..//debug/go
 
@@ -1124,6 +897,179 @@ func (w *Writer) Ints(n []int, sep byte, end byte) {
 func (w *Writer) Float(f float64) {
 	str := strconv.FormatFloat(f, 'f', -1, 64)
 	w.bytes([]byte(str))
+}
+
+//package hash_map
+//file ..//hash_map/go
+
+const hashMapCheckHashes = false
+
+type entry[K comparable, V any] struct {
+	hash  uint64
+	key   K
+	value V
+}
+
+type Hasher interface {
+	Hash() uint64
+}
+
+type HashMap[K comparable, H Hasher, V any] struct {
+	buckets [][]entry[K, V]
+	logSize int
+	size    int
+	oddSalt uint64
+}
+
+func NewHashMap[K comparable, H Hasher, V any](
+	size int,
+) *HashMap[K, H, V] {
+	logSize := Log2Ceil(size*2 + 1)
+	return &HashMap[K, H, V]{
+		buckets: make([][]entry[K, V], 1<<logSize),
+		logSize: logSize,
+		size:    0,
+		oddSalt: rand.Uint64() | 1,
+	}
+}
+
+func (hm *HashMap[K, H, V]) Hash(key K) uint64 {
+	hash := (*(*H)(unsafe.Pointer(&key))).Hash()
+	hash *= hm.oddSalt
+	hash = ReverseBits64(hash)
+	return hash
+}
+
+func (hm *HashMap[K, H, V]) Get(key K) V {
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value
+		}
+	}
+	var zero V
+	return zero
+}
+
+func (hm *HashMap[K, H, V]) Get2(key K) (V, bool) {
+	hash := hm.Hash(key)
+	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			return e.value, true
+		}
+	}
+	var zero V
+	return zero, false
+}
+
+func (hm *HashMap[K, H, V]) Delete(key K) bool {
+	hash := hm.Hash(key)
+	index := hash % (1 << hm.logSize)
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			buckets[i] = buckets[len(buckets)-1]
+			hm.buckets[index] = buckets[:len(buckets)-1]
+			hm.size--
+			return true
+		}
+	}
+	return false
+}
+
+func (hm *HashMap[K, H, V]) Set(key K, value V) {
+	hash := hm.Hash(key)
+	index := hash % (1 << hm.logSize)
+	buckets := hm.buckets[index]
+	for i := range buckets {
+		e := &buckets[i]
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+			e.value = value
+			return
+		}
+	}
+	hm.buckets[index] = append(buckets, entry[K, V]{
+		hash:  hash,
+		key:   key,
+		value: value,
+	})
+	hm.size++
+	if hm.size*2 > 1<<hm.logSize { // Resize at load factor 0.75
+		hm.resize()
+	}
+}
+
+func (hm *HashMap[K, H, V]) resize() {
+	hm.buckets = append(hm.buckets, make([][]entry[K, V], 1<<hm.logSize)...)
+	for i, bucket := range hm.buckets[:1<<hm.logSize] {
+		cntMove := 0
+		for i := 0; i < len(bucket)-cntMove; {
+			e := bucket[i]
+			if e.hash&(1<<hm.logSize) != 0 {
+				j := len(bucket) - 1 - cntMove
+				bucket[i], bucket[j] = bucket[j], bucket[i]
+				cntMove++
+			} else {
+				i++
+			}
+		}
+		odds := bucket[len(bucket)-cntMove:]
+		evens := bucket[:len(bucket)-cntMove]
+		if len(odds) <= len(evens) {
+			odds = slices.Clone(odds)
+		} else {
+			evens = slices.Clone(evens)
+		}
+		hm.buckets[i+(1<<hm.logSize)] = odds
+		hm.buckets[i] = evens
+	}
+	hm.logSize++
+}
+
+//package hash_map
+//file ..//hash_map/hash_map_test.go
+
+type intHasher int
+
+func (x intHasher) Hash() uint64 {
+	return uint64(x)
+}
+
+func BenchmarkHashMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = rand.Int()
+	}
+	b.ResetTimer()
+	hashMap := NewHashMap[int, intHasher, int](b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				hashMap.Set(a, a)
+			} else {
+				hashMap.Get(a)
+			}
+		}
+	}
+}
+
+func BenchmarkBuiltinMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = i*37 + 17
+	}
+	b.ResetTimer()
+	m := make(map[int]int, b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				m[a] = a
+			} else {
+				_ = m[a]
+			}
+		}
+	}
 }
 
 //package segment_tree_iter
