@@ -264,6 +264,23 @@ func RemoveUnusedCode(src []byte) []byte {
 		}
 	}
 
+	// Propagate type dependencies: if a type is reachable, mark types used in its definition as reachable too
+	for {
+		initialCount := len(reachableTypes)
+		for typeName := range reachableTypes {
+			if ts, exists := typeDecls[typeName]; exists {
+				// Extract type identifiers from the type's definition
+				for _, name := range extractTypeIdents(ts.Type) {
+					reachableTypes[name] = true
+				}
+			}
+		}
+		// If no new types were added, we've reached a fixed point
+		if len(reachableTypes) == initialCount {
+			break
+		}
+	}
+
 	// Build new decl list filtering out unused ones.
 	var newDecls []ast.Decl
 	for _, d := range file.Decls {

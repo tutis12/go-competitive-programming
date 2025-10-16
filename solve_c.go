@@ -51,7 +51,7 @@ func solveTestC(
 	stdout *fastio.Writer,
 ) {
 	n := stdin.Int()
-	a := hash_map.NewHashMap[int, intHash, int](n)
+	a := hash_map.NewHashMap[int, intHash, int](0)
 	for i := range n {
 		a.Set(i, stdin.Int())
 	}
@@ -70,7 +70,7 @@ func solveTestC(
 		lazy{},
 	)
 
-	dp := hash_map.NewHashMap[int, intHash, int](n)
+	dp := hash_map.NewHashMap[int, intHash, int](0)
 
 	for i := range n {
 		ai := a.Get(i)

@@ -7,6 +7,8 @@ import (
 	"unsafe"
 )
 
+const hashMapCheckHashes = false
+
 type entry[K comparable, V any] struct {
 	hash  uint64
 	key   K
@@ -27,7 +29,7 @@ type HashMap[K comparable, H Hasher, V any] struct {
 func NewHashMap[K comparable, H Hasher, V any](
 	size int,
 ) *HashMap[K, H, V] {
-	logSize := utils.Log2Ceil(size + 1)
+	logSize := utils.Log2Ceil(size*2 + 1)
 	return &HashMap[K, H, V]{
 		buckets: make([][]entry[K, V], 1<<logSize),
 		logSize: logSize,
@@ -46,7 +48,7 @@ func (hm *HashMap[K, H, V]) Hash(key K) uint64 {
 func (hm *HashMap[K, H, V]) Get(key K) V {
 	hash := hm.Hash(key)
 	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
-		if e.hash == hash && e.key == key {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
 			return e.value
 		}
 	}
@@ -57,7 +59,7 @@ func (hm *HashMap[K, H, V]) Get(key K) V {
 func (hm *HashMap[K, H, V]) Get2(key K) (V, bool) {
 	hash := hm.Hash(key)
 	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
-		if e.hash == hash && e.key == key {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
 			return e.value, true
 		}
 	}
@@ -71,7 +73,7 @@ func (hm *HashMap[K, H, V]) Delete(key K) bool {
 	buckets := hm.buckets[index]
 	for i := range buckets {
 		e := &buckets[i]
-		if e.hash == hash && e.key == key {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
 			buckets[i] = buckets[len(buckets)-1]
 			hm.buckets[index] = buckets[:len(buckets)-1]
 			hm.size--
@@ -87,7 +89,7 @@ func (hm *HashMap[K, H, V]) Set(key K, value V) {
 	buckets := hm.buckets[index]
 	for i := range buckets {
 		e := &buckets[i]
-		if e.hash == hash && e.key == key {
+		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
 			e.value = value
 			return
 		}
@@ -98,7 +100,7 @@ func (hm *HashMap[K, H, V]) Set(key K, value V) {
 		value: value,
 	})
 	hm.size++
-	if hm.size*4 > (1<<hm.logSize)*3 { // Resize at load factor 0.75
+	if hm.size*2 > 1<<hm.logSize { // Resize at load factor 0.75
 		hm.resize()
 	}
 }

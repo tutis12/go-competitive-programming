@@ -36,6 +36,7 @@ func RemoveGenerics(src []byte) []byte {
 		isStruct bool
 		params   []*ast.Field
 		fields   *ast.FieldList // only for structs
+		typeExpr ast.Expr       // the actual type expression (for non-struct types)
 	}
 	generics := map[string]*genericInfo{}
 	for _, d := range file.Decls {
@@ -48,7 +49,7 @@ func RemoveGenerics(src []byte) []byte {
 			if !ok || ts.TypeParams == nil {
 				continue
 			}
-			gi := &genericInfo{decl: gd, spec: ts, params: ts.TypeParams.List}
+			gi := &genericInfo{decl: gd, spec: ts, params: ts.TypeParams.List, typeExpr: ts.Type}
 			switch tt := ts.Type.(type) {
 			case *ast.StructType:
 				gi.isStruct = true
@@ -57,7 +58,9 @@ func RemoveGenerics(src []byte) []byte {
 				gi.isStruct = false
 				gi.fields = nil
 			default:
-				continue
+				// Handle all other types: arrays, slices, maps, channels, pointers, etc.
+				gi.isStruct = false
+				gi.fields = nil
 			}
 			generics[ts.Name.Name] = gi
 		}
@@ -84,7 +87,7 @@ func RemoveGenerics(src []byte) []byte {
 					key := id.Name + "[" + arg + "]"
 					if _, exists := seenInst[key]; !exists {
 						seenInst[key] = struct{}{}
-						insts[id.Name] = append(insts[id.Name], arg)
+						addInstantiation(insts, id.Name, arg)
 					}
 				}
 			}
@@ -99,7 +102,7 @@ func RemoveGenerics(src []byte) []byte {
 					key := id.Name + "[" + arg + "]"
 					if _, exists := seenInst[key]; !exists {
 						seenInst[key] = struct{}{}
-						insts[id.Name] = append(insts[id.Name], arg)
+						addInstantiation(insts, id.Name, arg)
 					}
 				}
 			}
@@ -315,6 +318,53 @@ func RemoveGenerics(src []byte) []byte {
 		}
 	}
 
+	// Collect all type parameter names first (for filtering during propagation)
+	paramNames := map[string]bool{}
+	for _, g := range generics {
+		for _, p := range g.params {
+			for _, id := range p.Names {
+				paramNames[id.Name] = true
+			}
+		}
+	}
+	for _, fn := range genericFuncs {
+		for _, p := range fn.Type.TypeParams.List {
+			for _, id := range p.Names {
+				paramNames[id.Name] = true
+			}
+		}
+	}
+
+	// Helper function to check if instantiation consists entirely of type parameter names
+	isParameterOnlyInst := func(inst string) bool {
+		parts := strings.Split(inst, ",")
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" && !paramNames[part] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Helper function to check if instantiation has correct parameter count
+	hasCorrectParamCount := func(typeName, inst string) bool {
+		parts := strings.Split(inst, ",")
+		actualCount := len(parts)
+		if actualCount == 1 && strings.TrimSpace(parts[0]) == "" {
+			actualCount = 0
+		}
+
+		if g := generics[typeName]; g != nil {
+			expectedCount := 0
+			for _, p := range g.params {
+				expectedCount += len(p.Names)
+			}
+			return actualCount == expectedCount
+		}
+		return true // If we can't determine expected count, allow it
+	}
+
 	// Propagate nested generic struct field instantiations.
 	for outerName, sigList := range insts {
 		og := generics[outerName]
@@ -329,6 +379,20 @@ func RemoveGenerics(src []byte) []byte {
 			}
 		}
 		for _, sig := range sigList {
+			// Skip instantiations that consist entirely of type parameter names
+			if isParameterOnlyInst(sig) {
+				// if outerName == "HashMap" {
+				//	// fmt.Printf("DEBUG HASHMAP: skipping parameter-only instantiation HashMap[%s]\n", sig)
+				// }
+				continue
+			}
+
+			// Skip instantiations with wrong parameter count
+			if !hasCorrectParamCount(outerName, sig) {
+				// // fmt.Printf("DEBUG: skipping %s[%s] - wrong parameter count\n", outerName, sig)
+				continue
+			}
+
 			parts := strings.Split(sig, ",")
 			for i := range parts {
 				parts[i] = strings.TrimSpace(parts[i])
@@ -339,16 +403,28 @@ func RemoveGenerics(src []byte) []byte {
 					mapping[name] = parts[i]
 				}
 			}
+
+			// Debug for HashMap processing
+			// if outerName == "HashMap" {
+			//	// fmt.Printf("DEBUG HASHMAP: HashMap[%s] mapping = %v\n", sig, mapping)
+			// }
+
 			for _, fld := range og.fields.List {
 				ast.Inspect(fld.Type, func(n ast.Node) bool {
 					switch ex := n.(type) {
 					case *ast.IndexExpr:
 						if id, ok := ex.X.(*ast.Ident); ok {
 							ig := generics[id.Name]
-							if ig != nil && ig.isStruct {
+							if ig != nil { // Remove isStruct restriction - propagate to all generic types
 								arg := exprToString(fset, ex.Index)
+								if outerName == "HashMap" && id.Name == "bucket" {
+									// fmt.Printf("DEBUG HASHMAP: found bucket[%s] in HashMap field\n", arg)
+								}
 								for k, v := range mapping {
 									arg = replaceTypeToken(arg, k, v)
+								}
+								if outerName == "HashMap" && id.Name == "bucket" {
+									// fmt.Printf("DEBUG HASHMAP: after replacement bucket[%s]\n", arg)
 								}
 								arg = strings.TrimSpace(arg)
 								if arg != "" {
@@ -359,16 +435,25 @@ func RemoveGenerics(src []byte) []byte {
 					case *ast.IndexListExpr:
 						if id, ok := ex.X.(*ast.Ident); ok {
 							ig := generics[id.Name]
-							if ig != nil && ig.isStruct {
+							if ig != nil { // Remove isStruct restriction - propagate to all generic types
 								parts2 := make([]string, 0, len(ex.Indices))
 								for _, ix := range ex.Indices {
 									seg := exprToString(fset, ix)
+									if outerName == "HashMap" && id.Name == "bucket" {
+										// fmt.Printf("DEBUG HASHMAP: found bucket segment [%s] in HashMap field\n", seg)
+									}
 									for k, v := range mapping {
 										seg = replaceTypeToken(seg, k, v)
+									}
+									if outerName == "HashMap" && id.Name == "bucket" {
+										// fmt.Printf("DEBUG HASHMAP: after replacement segment [%s]\n", seg)
 									}
 									parts2 = append(parts2, strings.TrimSpace(seg))
 								}
 								joined := strings.Join(parts2, ",")
+								if outerName == "HashMap" && id.Name == "bucket" {
+									// fmt.Printf("DEBUG HASHMAP: final bucket signature [%s]\n", joined)
+								}
 								if strings.TrimSpace(joined) != "" {
 									addInstantiation(insts, id.Name, joined)
 								}
@@ -378,6 +463,119 @@ func RemoveGenerics(src []byte) []byte {
 					return true
 				})
 			}
+		}
+	}
+
+	// Debug: print all instantiations before propagation
+	// // fmt.Printf("DEBUG: All instantiations before propagation:\n")
+	// for name, sigList := range insts {
+	//	fmt.Printf("  %s: %v\n", name, sigList)
+	// }
+
+	// Debug: print initial HashMap instantiations
+	// if hashMapInsts, exists := insts["HashMap"]; exists {
+	//	// fmt.Printf("DEBUG: Initial HashMap instantiations: %v\n", hashMapInsts)
+	// }
+	// Debug: print initial bucket instantiations
+	// if bucketInsts, exists := insts["bucket"]; exists {
+	//	fmt.Printf("DEBUG bucket instantiations: %v\n", bucketInsts)
+	// }
+
+	// Propagate nested generic type instantiations for non-struct types (e.g., type aliases).
+	for outerName, sigList := range insts {
+		og := generics[outerName]
+		if og == nil || og.isStruct || og.typeExpr == nil {
+			continue // Skip structs (handled above) and types without type expressions
+		}
+
+		var order []string
+		for _, p := range og.params {
+			for _, id := range p.Names {
+				order = append(order, id.Name)
+			}
+		}
+		for _, sig := range sigList {
+			// Skip instantiations that consist entirely of type parameter names
+			if isParameterOnlyInst(sig) {
+				if outerName == "bucket" {
+					// fmt.Printf("DEBUG BUCKET: skipping parameter-only instantiation bucket[%s]\n", sig)
+				}
+				continue
+			}
+
+			// Skip instantiations with wrong parameter count
+			if !hasCorrectParamCount(outerName, sig) {
+				fmt.Printf("DEBUG: skipping %s[%s] - wrong parameter count\n", outerName, sig)
+				continue
+			}
+
+			parts := strings.Split(sig, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			mapping := map[string]string{}
+			for i, name := range order {
+				if i < len(parts) {
+					mapping[name] = parts[i]
+				}
+			}
+
+			// Debug for bucket processing
+			if outerName == "bucket" {
+				// fmt.Printf("DEBUG BUCKET: bucket[%s] mapping = %v\n", sig, mapping)
+			} // Inspect the type expression for nested generics
+			ast.Inspect(og.typeExpr, func(n ast.Node) bool {
+				switch ex := n.(type) {
+				case *ast.IndexExpr:
+					if id, ok := ex.X.(*ast.Ident); ok {
+						ig := generics[id.Name]
+						if ig != nil {
+							arg := exprToString(fset, ex.Index)
+							if outerName == "bucket" && id.Name == "entry" {
+								// fmt.Printf("DEBUG BUCKET: found entry[%s] in bucket\n", arg)
+							}
+							for k, v := range mapping {
+								arg = replaceTypeToken(arg, k, v)
+							}
+							if outerName == "bucket" && id.Name == "entry" {
+								// fmt.Printf("DEBUG BUCKET: after replacement entry[%s]\n", arg)
+							}
+							arg = strings.TrimSpace(arg)
+							if arg != "" {
+								addInstantiation(insts, id.Name, arg)
+							}
+						}
+					}
+				case *ast.IndexListExpr:
+					if id, ok := ex.X.(*ast.Ident); ok {
+						ig := generics[id.Name]
+						if ig != nil {
+							parts2 := make([]string, 0, len(ex.Indices))
+							for _, ix := range ex.Indices {
+								seg := exprToString(fset, ix)
+								if outerName == "bucket" && id.Name == "entry" {
+									// fmt.Printf("DEBUG BUCKET: found entry segment [%s] in bucket\n", seg)
+								}
+								for k, v := range mapping {
+									seg = replaceTypeToken(seg, k, v)
+								}
+								if outerName == "bucket" && id.Name == "entry" {
+									// fmt.Printf("DEBUG BUCKET: after replacement segment [%s]\n", seg)
+								}
+								parts2 = append(parts2, strings.TrimSpace(seg))
+							}
+							joined := strings.Join(parts2, ",")
+							if outerName == "bucket" && id.Name == "entry" {
+								// fmt.Printf("DEBUG BUCKET: final entry signature [%s]\n", joined)
+							}
+							if strings.TrimSpace(joined) != "" {
+								addInstantiation(insts, id.Name, joined)
+							}
+						}
+					}
+				}
+				return true
+			})
 		}
 	}
 
@@ -545,7 +743,7 @@ func RemoveGenerics(src []byte) []byte {
 					case *ast.IndexExpr:
 						if id, ok := ex.X.(*ast.Ident); ok {
 							ig := generics[id.Name]
-							if ig != nil && ig.isStruct {
+							if ig != nil { // Remove isStruct restriction
 								arg := exprToString(fset, ex.Index)
 								for k, v := range mapping {
 									arg = replaceTypeToken(arg, k, v)
@@ -559,7 +757,7 @@ func RemoveGenerics(src []byte) []byte {
 					case *ast.IndexListExpr:
 						if id, ok := ex.X.(*ast.Ident); ok {
 							ig := generics[id.Name]
-							if ig != nil && ig.isStruct {
+							if ig != nil { // Remove isStruct restriction
 								parts2 := make([]string, 0, len(ex.Indices))
 								for _, ix := range ex.Indices {
 									s := exprToString(fset, ix)
@@ -644,7 +842,7 @@ func RemoveGenerics(src []byte) []byte {
 						case *ast.IndexListExpr:
 							if id, ok := ex.X.(*ast.Ident); ok {
 								ig := generics[id.Name]
-								if ig != nil && ig.isStruct {
+								if ig != nil { // Remove isStruct restriction
 									innerParts := make([]string, 0, len(ex.Indices))
 									for _, ix := range ex.Indices {
 										if idIn, okIn := ix.(*ast.Ident); okIn {
@@ -671,7 +869,7 @@ func RemoveGenerics(src []byte) []byte {
 						case *ast.IndexExpr:
 							if id, ok := ex.X.(*ast.Ident); ok {
 								ig := generics[id.Name]
-								if ig != nil && ig.isStruct {
+								if ig != nil { // Remove isStruct restriction
 									seg := strings.TrimSpace(exprToString(fset, ex.Index))
 									already := false
 									for _, existing := range insts[id.Name] {
@@ -695,21 +893,11 @@ func RemoveGenerics(src []byte) []byte {
 	}
 
 	// Now apply parameter-only filtering.
-	paramNames := map[string]bool{}
-	for _, g := range generics {
-		for _, p := range g.params {
-			for _, id := range p.Names {
-				paramNames[id.Name] = true
-			}
-		}
-	}
-	for _, fn := range genericFuncs {
-		for _, p := range fn.Type.TypeParams.List {
-			for _, id := range p.Names {
-				paramNames[id.Name] = true
-			}
-		}
-	}
+	// (paramNames already collected above)
+
+	// Debug: print parameter names
+	// fmt.Printf("DEBUG: paramNames = %v\n", paramNames)
+
 	filtered := map[string][]string{}
 	for name, list := range insts {
 		for _, inst := range list {
@@ -722,12 +910,211 @@ func RemoveGenerics(src []byte) []byte {
 					break
 				}
 			}
+			if name == "HashMap" {
+				// fmt.Printf("DEBUG: HashMap[%s] keep=%v parts=%v\n", inst, keep, parts)
+			}
 			if keep {
 				filtered[name] = append(filtered[name], inst)
 			}
 		}
 	}
 	insts = filtered
+
+	// Second propagation pass: now that we have concrete instantiations from return type analysis,
+	// propagate these to nested dependencies
+	for outerName, sigList := range insts {
+		og := generics[outerName]
+		if og == nil || !og.isStruct || og.fields == nil {
+			continue
+		}
+
+		var order []string
+		for _, p := range og.params {
+			for _, id := range p.Names {
+				order = append(order, id.Name)
+			}
+		}
+		for _, sig := range sigList {
+			// Skip instantiations that consist entirely of type parameter names
+			if isParameterOnlyInst(sig) {
+				continue
+			}
+
+			// Skip instantiations with wrong parameter count
+			if !hasCorrectParamCount(outerName, sig) {
+				// fmt.Printf("DEBUG PASS2: skipping %s[%s] - wrong parameter count\n", outerName, sig)
+				continue
+			}
+
+			parts := strings.Split(sig, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			mapping := map[string]string{}
+			for i, name := range order {
+				if i < len(parts) {
+					mapping[name] = parts[i]
+				}
+			}
+
+			// Debug for HashMap processing in second pass
+			if outerName == "HashMap" {
+				// fmt.Printf("DEBUG HASHMAP PASS2: HashMap[%s] mapping = %v\n", sig, mapping)
+			}
+
+			for _, fld := range og.fields.List {
+				ast.Inspect(fld.Type, func(n ast.Node) bool {
+					switch ex := n.(type) {
+					case *ast.IndexExpr:
+						if id, ok := ex.X.(*ast.Ident); ok {
+							ig := generics[id.Name]
+							if ig != nil { // Remove isStruct restriction - propagate to all generic types
+								arg := exprToString(fset, ex.Index)
+								if outerName == "HashMap" && id.Name == "bucket" {
+									// fmt.Printf("DEBUG HASHMAP PASS2: found bucket[%s] in HashMap field\n", arg)
+								}
+								for k, v := range mapping {
+									arg = replaceTypeToken(arg, k, v)
+								}
+								if outerName == "HashMap" && id.Name == "bucket" {
+									// fmt.Printf("DEBUG HASHMAP PASS2: after replacement bucket[%s]\n", arg)
+								}
+								arg = strings.TrimSpace(arg)
+								if arg != "" {
+									addInstantiation(insts, id.Name, arg)
+								}
+							}
+						}
+					case *ast.IndexListExpr:
+						if id, ok := ex.X.(*ast.Ident); ok {
+							ig := generics[id.Name]
+							if ig != nil { // Remove isStruct restriction - propagate to all generic types
+								parts2 := make([]string, 0, len(ex.Indices))
+								for _, ix := range ex.Indices {
+									seg := exprToString(fset, ix)
+									if outerName == "HashMap" && id.Name == "bucket" {
+										// fmt.Printf("DEBUG HASHMAP PASS2: found bucket segment [%s] in HashMap field\n", seg)
+									}
+									for k, v := range mapping {
+										seg = replaceTypeToken(seg, k, v)
+									}
+									if outerName == "HashMap" && id.Name == "bucket" {
+										// fmt.Printf("DEBUG HASHMAP PASS2: after replacement segment [%s]\n", seg)
+									}
+									parts2 = append(parts2, strings.TrimSpace(seg))
+								}
+								joined := strings.Join(parts2, ",")
+								if outerName == "HashMap" && id.Name == "bucket" {
+									// fmt.Printf("DEBUG HASHMAP PASS2: final bucket signature [%s]\n", joined)
+								}
+								if strings.TrimSpace(joined) != "" {
+									addInstantiation(insts, id.Name, joined)
+								}
+							}
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+
+	// Second propagation pass for non-struct types
+	for outerName, sigList := range insts {
+		og := generics[outerName]
+		if og == nil || og.isStruct || og.typeExpr == nil {
+			continue // Skip structs (handled above) and types without type expressions
+		}
+
+		var order []string
+		for _, p := range og.params {
+			for _, id := range p.Names {
+				order = append(order, id.Name)
+			}
+		}
+		for _, sig := range sigList {
+			// Skip instantiations that consist entirely of type parameter names
+			if isParameterOnlyInst(sig) {
+				continue
+			}
+
+			// Skip instantiations with wrong parameter count
+			if !hasCorrectParamCount(outerName, sig) {
+				// fmt.Printf("DEBUG PASS2: skipping %s[%s] - wrong parameter count\n", outerName, sig)
+				continue
+			}
+
+			parts := strings.Split(sig, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			mapping := map[string]string{}
+			for i, name := range order {
+				if i < len(parts) {
+					mapping[name] = parts[i]
+				}
+			}
+
+			// Debug for bucket processing in second pass
+			if outerName == "bucket" {
+				// fmt.Printf("DEBUG BUCKET PASS2: bucket[%s] mapping = %v\n", sig, mapping)
+			}
+
+			// Inspect the type expression for nested generics
+			ast.Inspect(og.typeExpr, func(n ast.Node) bool {
+				switch ex := n.(type) {
+				case *ast.IndexExpr:
+					if id, ok := ex.X.(*ast.Ident); ok {
+						ig := generics[id.Name]
+						if ig != nil {
+							arg := exprToString(fset, ex.Index)
+							if outerName == "bucket" && id.Name == "entry" {
+								// fmt.Printf("DEBUG BUCKET PASS2: found entry[%s] in bucket\n", arg)
+							}
+							for k, v := range mapping {
+								arg = replaceTypeToken(arg, k, v)
+							}
+							if outerName == "bucket" && id.Name == "entry" {
+								// fmt.Printf("DEBUG BUCKET PASS2: after replacement entry[%s]\n", arg)
+							}
+							arg = strings.TrimSpace(arg)
+							if arg != "" {
+								addInstantiation(insts, id.Name, arg)
+							}
+						}
+					}
+				case *ast.IndexListExpr:
+					if id, ok := ex.X.(*ast.Ident); ok {
+						ig := generics[id.Name]
+						if ig != nil {
+							parts2 := make([]string, 0, len(ex.Indices))
+							for _, ix := range ex.Indices {
+								seg := exprToString(fset, ix)
+								if outerName == "bucket" && id.Name == "entry" {
+									// fmt.Printf("DEBUG BUCKET PASS2: found entry segment [%s] in bucket\n", seg)
+								}
+								for k, v := range mapping {
+									seg = replaceTypeToken(seg, k, v)
+								}
+								if outerName == "bucket" && id.Name == "entry" {
+									// fmt.Printf("DEBUG BUCKET PASS2: after replacement segment [%s]\n", seg)
+								}
+								parts2 = append(parts2, strings.TrimSpace(seg))
+							}
+							joined := strings.Join(parts2, ",")
+							if outerName == "bucket" && id.Name == "entry" {
+								// fmt.Printf("DEBUG BUCKET PASS2: final entry signature [%s]\n", joined)
+							}
+							if strings.TrimSpace(joined) != "" {
+								addInstantiation(insts, id.Name, joined)
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
 
 	// Deduplicate & sort instantiation signature lists.
 	for name, list := range insts {
@@ -1136,11 +1523,80 @@ func RemoveGenerics(src []byte) []byte {
 	base.Reset()
 	base.WriteString(baseStr)
 
-	// Emit concrete struct types.
+	// replaceGenericInstantiations replaces generic type instantiations like "entry[int, int]" with their concrete type names like "entryG1"
+	// This function needs to use the same filtering logic as concrete type generation to maintain consistent indexing
+	replaceGenericInstantiations := func(typeStr string, insts map[string][]string) string {
+		result := typeStr
+
+		// For each generic type that has instantiations
+		for genericName, signatures := range insts {
+			for i, sig := range signatures {
+				// Apply the same parameter count filtering as in concrete type generation
+				shouldInclude := true
+				if g := generics[genericName]; g != nil {
+					expectedCount := 0
+					for _, p := range g.params {
+						expectedCount += len(p.Names)
+					}
+					parts := strings.Split(sig, ",")
+					for k := range parts {
+						parts[k] = strings.TrimSpace(parts[k])
+					}
+					actualCount := len(parts)
+					if actualCount == 1 && strings.TrimSpace(parts[0]) == "" {
+						actualCount = 0
+					}
+					if actualCount != expectedCount {
+						shouldInclude = false
+					}
+				}
+
+				if !shouldInclude {
+					continue // Skip this instantiation, but use original index for others
+				}
+
+				// Use the same index formula as concrete type generation: i+1
+				concreteName := fmt.Sprintf(genericNameFormat, genericName, i+1)
+
+				// Only replace patterns that look like generic type instantiations, not array indexing
+				// The signature should only contain type names, not single lowercase variables
+				parts := strings.Split(sig, ",")
+				isTypeInstantiation := true
+				for _, part := range parts {
+					part = strings.TrimSpace(part)
+					// If it's a single lowercase letter, it's likely a variable, not a type
+					if len(part) == 1 && part >= "a" && part <= "z" {
+						isTypeInstantiation = false
+						break
+					}
+				}
+
+				if isTypeInstantiation {
+					if genericName == "bucket" {
+						fmt.Printf("DEBUG REPLACE: replacing bucket[%s] with %s\n", sig, concreteName)
+					}
+					// Try both with and without spaces after commas
+					genericPattern1 := genericName + "[" + sig + "]"
+					genericPattern2 := genericName + "[" + strings.ReplaceAll(sig, ",", ", ") + "]"
+
+					result = strings.ReplaceAll(result, genericPattern1, concreteName)
+					result = strings.ReplaceAll(result, genericPattern2, concreteName)
+				} else if genericName == "bucket" {
+					fmt.Printf("DEBUG REPLACE: skipping bucket[%s] replacement - contains variable\n", sig)
+				}
+			}
+		}
+
+		return result
+	}
+
+	// Emit concrete types (structs and other types).
+	fmt.Printf("DEBUG: Starting concrete type generation, insts=%v\n", insts)
 	base.WriteString("\n// ---- Concrete Types (Generated) ----\n")
+
 	for _, name := range sortedKeys(insts) {
 		g := generics[name]
-		if g == nil || !g.isStruct || g.fields == nil {
+		if g == nil {
 			continue
 		}
 		for i, sig := range insts[name] {
@@ -1149,6 +1605,26 @@ func RemoveGenerics(src []byte) []byte {
 			for k := range parts {
 				parts[k] = strings.TrimSpace(parts[k])
 			}
+
+			// Check parameter count for concrete type generation
+			if g != nil {
+				expectedCount := 0
+				for _, p := range g.params {
+					expectedCount += len(p.Names)
+				}
+				actualCount := len(parts)
+				if actualCount == 1 && strings.TrimSpace(parts[0]) == "" {
+					actualCount = 0
+				}
+				if actualCount != expectedCount {
+					fmt.Printf("DEBUG CONCRETE: skipping %s[%s] - wrong parameter count (expected %d, got %d)\n", name, sig, expectedCount, actualCount)
+					continue
+				} else {
+					// Add to valid instantiations for later use in method body replacement
+					// (no longer needed since we use closure)
+				}
+			}
+
 			mapping := map[string]string{}
 			pi := 0
 			for _, p := range g.params {
@@ -1159,19 +1635,61 @@ func RemoveGenerics(src []byte) []byte {
 					}
 				}
 			}
-			var fbuf strings.Builder
-			for _, fld := range g.fields.List {
-				var names []string
-				for _, nm := range fld.Names {
-					names = append(names, nm.Name)
+
+			// Debug bucket type generation
+			if name == "bucket" {
+				fmt.Printf("DEBUG CONCRETE: generating %s from bucket[%s], mapping=%v\n", concrete, sig, mapping)
+			}
+
+			if g.isStruct && g.fields != nil {
+				// Handle struct types
+				var fbuf strings.Builder
+				// Debug: print the mapping for entry types
+				if name == "entry" {
+					// fmt.Printf("DEBUG: entry[%s] -> %s (STRUCT)\n", sig, concrete)
+					// fmt.Printf("DEBUG: mapping = %v\n", mapping)
 				}
-				typeStr := exprToString(fset, fld.Type)
+				for _, fld := range g.fields.List {
+					var names []string
+					for _, nm := range fld.Names {
+						names = append(names, nm.Name)
+					}
+					typeStr := exprToString(fset, fld.Type)
+					if name == "entry" {
+						// fmt.Printf("DEBUG: field %v: typeStr before = %s\n", names, typeStr)
+					}
+					for k, v := range mapping {
+						typeStr = replaceTypeToken(typeStr, k, v)
+					}
+					// Replace generic instantiations with concrete types
+					typeStr = replaceGenericInstantiations(typeStr, insts)
+					if name == "entry" {
+						// fmt.Printf("DEBUG: field %v: typeStr after = %s\n", names, typeStr)
+					}
+					fbuf.WriteString(strings.Join(names, ", ") + " " + typeStr + "\n")
+				}
+				base.WriteString(fmt.Sprintf("type %s struct { %s }\n", concrete, fbuf.String()))
+			} else {
+				// Handle non-struct types (arrays, slices, maps, channels, pointers, etc.)
+				typeStr := exprToString(fset, g.typeExpr)
+				// Debug: print the mapping for bucket types
+				if name == "bucket" {
+					fmt.Printf("DEBUG CONCRETE: %s non-struct typeStr before = %s, mapping=%v\n", concrete, typeStr, mapping)
+				}
 				for k, v := range mapping {
 					typeStr = replaceTypeToken(typeStr, k, v)
 				}
-				fbuf.WriteString(strings.Join(names, ", ") + " " + typeStr + "\n")
+				// Replace generic instantiations with concrete types
+				if name == "bucket" {
+					fmt.Printf("DEBUG CONCRETE: insts map: %v\n", insts)
+				}
+				typeStr = replaceGenericInstantiations(typeStr, insts)
+				if name == "bucket" {
+					fmt.Printf("DEBUG CONCRETE: %s non-struct typeStr after = %s\n", concrete, typeStr)
+					fmt.Printf("DEBUG CONCRETE: about to write: type %s %s\n", concrete, typeStr)
+				}
+				base.WriteString(fmt.Sprintf("type %s %s\n", concrete, typeStr))
 			}
-			base.WriteString(fmt.Sprintf("type %s struct { %s }\n", concrete, fbuf.String()))
 		}
 	}
 
@@ -1217,7 +1735,40 @@ func RemoveGenerics(src []byte) []byte {
 		}
 		orig := nodeToString(fset, fd)
 		for i, sig := range insts[genName] {
+			// Apply the same parameter count filtering as in concrete type generation
+			shouldInclude := true
+			if g := generics[genName]; g != nil {
+				expectedCount := 0
+				for _, p := range g.params {
+					expectedCount += len(p.Names)
+				}
+				parts := strings.Split(sig, ",")
+				for k := range parts {
+					parts[k] = strings.TrimSpace(parts[k])
+				}
+				actualCount := len(parts)
+				if actualCount == 1 && strings.TrimSpace(parts[0]) == "" {
+					actualCount = 0
+				}
+				if actualCount != expectedCount {
+					shouldInclude = false
+				}
+			}
+
+			if !shouldInclude {
+				if genName == "HashMap" {
+					fmt.Printf("DEBUG METHOD SKIP: skipping %s[%s] method generation - malformed\n", genName, sig)
+				}
+				continue // Skip this malformed instantiation
+			}
+
 			concrete := fmt.Sprintf(genericNameFormat, genName, i+1)
+
+			// Debug method replacement for bucket types
+			if genName == "HashMap" {
+				fmt.Printf("DEBUG METHOD: replacing in %s method for sig %s -> %s\n", genName, sig, concrete)
+			}
+
 			newSrc := orig
 			if sig != origSig && origSig != "" {
 				patO := ptr + genName + "[" + origSig + "]"
@@ -1248,7 +1799,19 @@ func RemoveGenerics(src []byte) []byte {
 				newSrc = strings.ReplaceAll(newSrc, old, mapped)
 			}
 
+			// Replace generic type instantiations in method body
+			if genName == "HashMap" {
+				fmt.Printf("DEBUG METHOD: using filtered instantiations for method replacement\n")
+			}
+			newSrc = replaceGenericInstantiations(newSrc, insts)
+
 			// Also apply inferred generic call replacement for method bodies
+			if genName == "HashMap" {
+				// Debug: check for bucket references before replacement
+				if strings.Contains(newSrc, "bucket[") {
+					fmt.Printf("DEBUG METHOD: found bucket reference in %s method before replacement\n", concrete)
+				}
+			}
 			for depFnName, depFn := range genericFuncs {
 				if depFn == nil || len(insts[depFnName]) == 0 {
 					continue
@@ -1468,12 +2031,32 @@ func RemoveGenerics(src []byte) []byte {
 
 // --- Helpers ---
 func addInstantiation(insts map[string][]string, name, sig string) {
+	// Debug all instantiation attempts
+	if name == "bucket" {
+		fmt.Printf("DEBUG ADD: attempting to add %s[%s]\n", name, sig)
+	}
+
+	// Filter out instantiations that look like variable indexing rather than type instantiation
+	parts := strings.Split(sig, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		// If it's a single lowercase letter, it's likely a variable, not a type
+		if len(part) == 1 && part >= "a" && part <= "z" {
+			fmt.Printf("DEBUG ADD: skipping %s[%s] - contains variable '%s'\n", name, sig, part)
+			return
+		}
+	}
+
 	for _, e := range insts[name] {
 		if e == sig {
 			return
 		}
 	}
 	insts[name] = append(insts[name], sig)
+
+	if name == "bucket" {
+		fmt.Printf("DEBUG ADD: added %s[%s]\n", name, sig)
+	}
 }
 func posOffset(fset *token.FileSet, p token.Pos) int { return fset.Position(p).Offset }
 func exprToString(fset *token.FileSet, e ast.Expr) string {
@@ -1570,6 +2153,7 @@ func replaceTypeToken(code, ident, replacement string) string {
 	res = strings.ReplaceAll(res, "(intHash)(&key).Hash()", "key.Hash()")
 	return res
 }
+
 func isBoundaryRune(r rune) bool {
 	return r == ' ' || r == '\n' || r == '\t' || r == '(' || r == ')' || r == '{' || r == '}' || r == ',' || r == ';' || r == '*' || r == '[' || r == ']' || r == ':' || r == '.' || r == '&'
 }
