@@ -55,7 +55,7 @@ func testFunc() {
 	if !hasUint64Log2Floor {
 		t.Error("Missing Log2Floor function with uint64 parameter")
 	}
-	
+
 	hasIntIsPowerOf2 := strings.Contains(resultStr, "func IsPowerOf2G1(x int) bool") || strings.Contains(resultStr, "func IsPowerOf2G2(x int) bool")
 	hasUint64IsPowerOf2 := strings.Contains(resultStr, "func IsPowerOf2G1(x uint64) bool") || strings.Contains(resultStr, "func IsPowerOf2G2(x uint64) bool")
 	if !hasIntIsPowerOf2 {
@@ -70,7 +70,7 @@ func testFunc() {
 	if !hasCorrectLog2FloorCall {
 		t.Error("Log2Floor call in Log2Ceil should be replaced with a concrete version")
 	}
-	
+
 	// Check that IsPowerOf2 calls were replaced with concrete versions
 	hasIsPowerOf2IntCall := strings.Contains(resultStr, "IsPowerOf2G1(42)") || strings.Contains(resultStr, "IsPowerOf2G2(42)")
 	hasIsPowerOf2Uint64Call := strings.Contains(resultStr, "IsPowerOf2G1(uint64(42))") || strings.Contains(resultStr, "IsPowerOf2G2(uint64(42))")
