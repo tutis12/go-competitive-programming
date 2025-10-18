@@ -3,13 +3,15 @@ package hash_map
 import (
 	"main/utils"
 	"math/rand/v2"
-	"slices"
 	"unsafe"
 )
 
-const hashMapCheckHashes = false
+const (
+	maxOffset      = 8
+	checkHashFirst = false
+)
 
-type entry[K comparable, V any] struct {
+type hashTableEntry[K comparable, V any] struct {
 	hash  uint64
 	key   K
 	value V
@@ -19,115 +21,178 @@ type Hasher interface {
 	Hash() uint64
 }
 
-type HashMap[K comparable, H Hasher, V any] struct {
-	buckets [][]entry[K, V]
-	logSize int
-	size    int
-	oddSalt uint64
+type HashTable[K comparable, H Hasher, V any] struct {
+	entries1 []hashTableEntry[K, V]
+	entries2 [][]hashTableEntry[K, V]
+	log2Size int
+	oddSalt1 uint64
+	oddSalt2 uint64
+	count    int
 }
 
-func NewHashMap[K comparable, H Hasher, V any](
+func NewHashTable[K comparable, H Hasher, V any](
 	size int,
-) *HashMap[K, H, V] {
-	logSize := utils.Log2Ceil(size*2 + 1)
-	return &HashMap[K, H, V]{
-		buckets: make([][]entry[K, V], 1<<logSize),
-		logSize: logSize,
-		size:    0,
-		oddSalt: rand.Uint64() | 1,
+) *HashTable[K, H, V] {
+	log2Size := utils.LogCeil(size*2 + 1)
+	return &HashTable[K, H, V]{
+		entries1: make([]hashTableEntry[K, V], (1<<log2Size)+maxOffset),
+		entries2: make([][]hashTableEntry[K, V], 1<<log2Size),
+		log2Size: log2Size,
+		oddSalt1: rand.Uint64() | 1,
+		oddSalt2: rand.Uint64() | 1,
+		count:    0,
 	}
 }
 
-func (hm *HashMap[K, H, V]) Hash(key K) uint64 {
-	hash := (*(*H)(unsafe.Pointer(&key))).Hash()
-	hash *= hm.oddSalt
+func (hm *HashTable[K, H, V]) hash(key K) uint64 {
+	val := (*(*H)(unsafe.Pointer(&key))).Hash()
+	if val == 0 {
+		return 1
+	} else {
+		return val
+	}
+}
+
+func (hm *HashTable[K, H, V]) index1(hash uint64) uint64 {
+	hash *= hm.oddSalt1
 	hash = utils.ReverseBits64(hash)
-	return hash
+	return hash & (1<<hm.log2Size - 1)
 }
 
-func (hm *HashMap[K, H, V]) Get(key K) V {
-	hash := hm.Hash(key)
-	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
-		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
-			return e.value
-		}
-	}
-	var zero V
-	return zero
+func (hm *HashTable[K, H, V]) index2(hash uint64) uint64 {
+	hash *= hm.oddSalt2
+	hash = utils.ReverseBits64(hash)
+	return hash & (1<<hm.log2Size - 1)
 }
 
-func (hm *HashMap[K, H, V]) Get2(key K) (V, bool) {
-	hash := hm.Hash(key)
-	for _, e := range hm.buckets[hash%(1<<hm.logSize)] {
-		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
-			return e.value, true
+func (hm *HashTable[K, H, V]) Get(key K) V {
+	val, ok := hm.Get2(key)
+	if !ok {
+		var zero V
+		return zero
+	}
+	return val
+}
+
+func (hm *HashTable[K, H, V]) Get2(key K) (V, bool) {
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := utils.GetArr(hm.entries1, int(index1))
+	var zero V
+	for _, val := range arr {
+		if val.hash == 0 {
+			return zero, false
+		}
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			return val.value, true
 		}
 	}
-	var zero V
+	index2 := hm.index2(hash)
+	for _, val := range *utils.Get(hm.entries2, int(index2)) {
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			return val.value, true
+		}
+	}
 	return zero, false
 }
 
-func (hm *HashMap[K, H, V]) Delete(key K) bool {
-	hash := hm.Hash(key)
-	index := hash % (1 << hm.logSize)
-	buckets := hm.buckets[index]
-	for i := range buckets {
-		e := &buckets[i]
-		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
-			buckets[i] = buckets[len(buckets)-1]
-			hm.buckets[index] = buckets[:len(buckets)-1]
-			hm.size--
+func (hm *HashTable[K, H, V]) Delete(key K) bool {
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := utils.GetArr(hm.entries1, int(index1))
+	for i := range maxOffset {
+		e := &arr[i]
+		if e.hash == 0 {
+			return false
+		}
+		if (!checkHashFirst || e.hash == hash) && e.key == key {
+			e.hash = 0
+			hm.count--
+			return true
+		}
+	}
+	index2 := hm.index2(hash)
+	slice := *utils.Get(hm.entries2, int(index2))
+	for i := range slice {
+		val := &slice[i]
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			*val = *utils.Get(slice, len(slice)-1)
+			slice = slice[:len(slice)-1]
+			*utils.Get(hm.entries2, int(index2)) = slice
+			hm.count--
 			return true
 		}
 	}
 	return false
 }
 
-func (hm *HashMap[K, H, V]) Set(key K, value V) {
-	hash := hm.Hash(key)
-	index := hash % (1 << hm.logSize)
-	buckets := hm.buckets[index]
-	for i := range buckets {
-		e := &buckets[i]
-		if (!hashMapCheckHashes || e.hash == hash) && e.key == key {
+func (hm *HashTable[K, H, V]) Set(key K, value V) {
+	if hm.count*2 >= (1 << hm.log2Size) {
+		hm.resize()
+	}
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := utils.GetArr(hm.entries1, int(index1))
+	for i := range maxOffset {
+		e := &arr[i]
+		if e.hash == 0 {
+			*e = hashTableEntry[K, V]{
+				hash:  hash,
+				key:   key,
+				value: value,
+			}
+			hm.count++
+			return
+		} else if (!checkHashFirst || e.hash == hash) && e.key == key {
 			e.value = value
 			return
 		}
 	}
-	hm.buckets[index] = append(buckets, entry[K, V]{
+	index2 := hm.index2(hash)
+	entries := utils.Get(hm.entries2, int(index2))
+	for i, val := range *entries {
+		if val.hash == hash && val.key == key {
+			utils.Get(*entries, i).value = value
+			return
+		}
+	}
+	*entries = append(*entries, hashTableEntry[K, V]{
 		hash:  hash,
 		key:   key,
 		value: value,
 	})
-	hm.size++
-	if hm.size*2 > 1<<hm.logSize { // Resize at load factor 0.75
-		hm.resize()
-	}
+	hm.count++
 }
 
-func (hm *HashMap[K, H, V]) resize() {
-	hm.buckets = append(hm.buckets, make([][]entry[K, V], 1<<hm.logSize)...)
-	for i, bucket := range hm.buckets[:1<<hm.logSize] {
-		cntMove := 0
-		for i := 0; i < len(bucket)-cntMove; {
-			e := bucket[i]
-			if e.hash&(1<<hm.logSize) != 0 {
-				j := len(bucket) - 1 - cntMove
-				bucket[i], bucket[j] = bucket[j], bucket[i]
-				cntMove++
-			} else {
-				i++
+func (hm *HashTable[K, H, V]) resize() {
+	hm.log2Size++
+	newEntries1 := make([]hashTableEntry[K, V], (1<<hm.log2Size)+maxOffset)
+	newEntries2 := make([][]hashTableEntry[K, V], 1<<hm.log2Size)
+	add := func(e hashTableEntry[K, V]) {
+		hash := hm.hash(e.key)
+		index1 := hm.index1(hash)
+		arr := utils.GetArr(newEntries1, int(index1))
+		for j := range arr {
+			if arr[j].hash == 0 {
+				arr[j] = e
+				return
 			}
 		}
-		odds := bucket[len(bucket)-cntMove:]
-		evens := bucket[:len(bucket)-cntMove]
-		if len(odds) <= len(evens) {
-			odds = slices.Clone(odds)
-		} else {
-			evens = slices.Clone(evens)
-		}
-		hm.buckets[i+(1<<hm.logSize)] = odds
-		hm.buckets[i] = evens
+		index2 := hm.index2(hash)
+		entries := utils.Get(newEntries2, int(index2))
+		*entries = append(*entries, e)
 	}
-	hm.logSize++
+	for _, e := range hm.entries1 {
+		if e.hash == 0 {
+			continue
+		}
+		add(e)
+	}
+	for _, bucket := range hm.entries2 {
+		for _, e := range bucket {
+			add(e)
+		}
+	}
+	hm.entries1 = newEntries1
+	hm.entries2 = newEntries2
 }

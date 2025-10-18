@@ -95,7 +95,7 @@ func (w *Writer) Uint(n uint, c byte) {
 	w.bytes(w.intBuffer[i+1:])
 }
 
-func (w *Writer) Fprintf(format string, a ...any) {
+func (w *Writer) Printf(format string, a ...any) {
 	w.String(fmt.Sprintf(format, a...))
 }
 

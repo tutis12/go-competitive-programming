@@ -2,9 +2,10 @@ package utils
 
 import (
 	"math/bits"
+	"unsafe"
 )
 
-func Log2Floor[T int | uint64](x T) int {
+func LogFloor[T int | uint64](x T) int {
 	x64 := uint64(x)
 	if x64 == 0 {
 		panic("Log2(0) is undefined")
@@ -12,7 +13,7 @@ func Log2Floor[T int | uint64](x T) int {
 	return 63 - bits.LeadingZeros64(x64)
 }
 
-func Log2Ceil[T int | uint64](x T) int {
+func LogCeil[T int | uint64](x T) int {
 	x64 := uint64(x)
 	if x64 == 0 {
 		panic("Log2(0) is undefined")
@@ -20,7 +21,7 @@ func Log2Ceil[T int | uint64](x T) int {
 	if x64 == 1 {
 		return 0
 	}
-	return 1 + Log2Floor(x64-1)
+	return 1 + LogFloor(x64-1)
 }
 
 func IsPowerOf2[T int | uint64](x T) bool {
@@ -83,4 +84,18 @@ func ReverseBits32(x uint32) uint32 {
 	x = (x>>8)&0x00FF00FF | (x&0x00FF00FF)<<8
 	x = (x>>16)&0x0000FFFF | (x&0x0000FFFF)<<16
 	return x
+}
+
+func Get[T any](slice []T, index int) *T {
+	return (*T)(unsafe.Pointer(uintptr(unsafe.Pointer(unsafe.SliceData(slice))) + uintptr(index)*unsafe.Sizeof(*new(T))))
+}
+
+func GetArr[T any](slice []T, offset int) *[8]T {
+	data := unsafe.Add(unsafe.Pointer(unsafe.SliceData(slice)), uintptr(offset)*unsafe.Sizeof(*new(T)))
+	return (*[8]T)(data)
+}
+
+type Pair[X any, Y any] struct {
+	X X
+	Y Y
 }

@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+func Go(fn func()) {
+	go func() {
+		defer Recover()
+		fn()
+	}()
+}
+
 func Recover() {
 	err := recover()
 	if err == nil {

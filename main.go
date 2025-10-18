@@ -3,12 +3,13 @@ package main
 import (
 	"main/debug"
 	"main/fastio"
+	"main/hackercup"
 	"os"
 )
 
 const (
 	fromFile   = false
-	inputFile  = "input.txt"
+	inputFile  = "warm_up_input.txt"
 	outputFile = "output.txt"
 )
 
@@ -36,5 +37,43 @@ func main() {
 	defer stdout.WriteAll()
 	defer debug.Recover()
 
-	solveX(stdin, stdout)
+	hackercup.Hackercup(stdin, stdout)
 }
+
+/*input
+6
+5
+1 2 3 4 5
+1 2 3 4 5
+3
+1 1 2
+2 2 2
+4
+1 2 3 4
+3 4 4 4
+4
+1 2 3 4
+1 2 3 3
+3
+1 3 3
+2 2 2
+2
+1 2
+2 1
+
+*/
+
+/*output
+Case #1: 0
+Case #2: 2
+3 1
+3 2
+Case #3: 3
+3 1
+4 2
+4 3
+Case #4: -1
+Case #5: -1
+Case #6: -1
+
+*/

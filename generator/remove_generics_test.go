@@ -593,3 +593,83 @@ func main() {
 		t.Logf("✅ All real-world pattern transformations passed")
 	}
 }
+
+func TestUnsafeGenericUtilityFunctions(t *testing.T) {
+	testCase := `package main
+
+import "unsafe"
+
+const maxOffset = 8
+
+type entry[K comparable, V any] struct {
+	hash  uint64
+	key   K
+	value V
+}
+
+func UnsafeSliceGet[T any](slice []T, index int) *T {
+	return (*T)(unsafe.Pointer(uintptr(unsafe.Pointer(unsafe.SliceData(slice))) + uintptr(index)*unsafe.Sizeof(*new(T))))
+}
+
+func SliceToArrayPtrWithOffset[T any](slice []T, offset int) *[maxOffset]T {
+	data := unsafe.Add(unsafe.Pointer(unsafe.SliceData(slice)), uintptr(offset)*unsafe.Sizeof(*new(T)))
+	return (*[maxOffset]T)(data)
+}
+
+type HashMap[K comparable, V any] struct {
+	entries1 []entry[K, V]
+	entries2 [][]entry[K, V]
+}
+
+func (hm *HashMap[K, V]) Get(key K) V {
+	index1 := 0
+	arr := SliceToArrayPtrWithOffset(hm.entries1, int(index1))
+	_ = arr
+	
+	index2 := 1
+	entries := UnsafeSliceGet(hm.entries2, int(index2))
+	for i, val := range *entries {
+		if val.key == key {
+			UnsafeSliceGet(*entries, i).value = val.value
+			break
+		}
+	}
+	
+	var zero V
+	return zero
+}
+
+func main() {
+	hm := &HashMap[int, string]{
+		entries1: make([]entry[int, string], 16),
+		entries2: make([][]entry[int, string], 8),
+	}
+	result := hm.Get(42)
+	_ = result
+}`
+
+	result := RemoveGenerics([]byte(testCase))
+	resultStr := string(result)
+
+	// Check that concrete versions of the generic utility functions were generated
+	if !strings.Contains(resultStr, "func UnsafeSliceGetG1") && !strings.Contains(resultStr, "func UnsafeSliceGet") {
+		t.Errorf("Expected concrete version of UnsafeSliceGet to be generated")
+		t.Logf("Result missing UnsafeSliceGet concrete function:\n%s", resultStr)
+	}
+
+	if !strings.Contains(resultStr, "func SliceToArrayPtrWithOffsetG1") && !strings.Contains(resultStr, "func SliceToArrayPtrWithOffset") {
+		t.Errorf("Expected concrete version of SliceToArrayPtrWithOffset to be generated")
+		t.Logf("Result missing SliceToArrayPtrWithOffset concrete function:\n%s", resultStr)
+	}
+
+	// Check that the HashMap method calls were replaced with concrete function calls
+	if strings.Contains(resultStr, "SliceToArrayPtrWithOffset[") {
+		t.Errorf("Generic function call should be replaced with concrete version")
+	}
+
+	if strings.Contains(resultStr, "UnsafeSliceGet[") {
+		t.Errorf("Generic function call should be replaced with concrete version")
+	}
+
+	t.Logf("Generated result:\n%s", resultStr)
+}

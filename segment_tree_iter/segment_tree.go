@@ -4,12 +4,12 @@ import (
 	"main/utils"
 )
 
-type node[value, update any] struct {
+type segmentTreeNode[value, update any] struct {
 	value  value
 	update update
 }
 
-type ST[
+type SegmentTree[
 	value interface{ Merge(value) value },
 	update interface {
 		ApplyUpdate(*value)
@@ -18,12 +18,12 @@ type ST[
 ] struct {
 	log2n      int
 	n          int // power of two, number of leaves
-	arr        []node[value, update]
+	arr        []segmentTreeNode[value, update]
 	zeroValue  value
 	zeroUpdate update
 }
 
-func NewST[
+func NewSegmentTree[
 	value interface{ Merge(value) value },
 	update interface {
 		ApplyUpdate(*value)
@@ -34,23 +34,23 @@ func NewST[
 	size int,
 	zeroValue value,
 	zeroUpdate update,
-) *ST[value, update] {
+) *SegmentTree[value, update] {
 	if size <= 0 {
 		panic("size must be positive")
 	}
-	log2n := utils.Log2Ceil(size)
+	log2n := utils.LogCeil(size)
 	n := 1 << log2n
-	arr := make([]node[value, update], 2*n)
+	arr := make([]segmentTreeNode[value, update], 2*n)
 	for i := range size {
-		arr[n+i] = node[value, update]{init(i), zeroUpdate}
+		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{init(i), zeroUpdate}
 	}
 	for i := size; i < n; i++ {
-		arr[n+i] = node[value, update]{zeroValue, zeroUpdate}
+		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{zeroValue, zeroUpdate}
 	}
 	for i := n - 1; i > 0; i-- {
-		arr[i] = node[value, update]{arr[2*i].value.Merge(arr[2*i+1].value), zeroUpdate}
+		*utils.Get(arr, i) = segmentTreeNode[value, update]{(utils.Get(arr, 2*i).value).Merge(utils.Get(arr, 2*i+1).value), zeroUpdate}
 	}
-	return &ST[value, update]{
+	return &SegmentTree[value, update]{
 		log2n:      log2n,
 		n:          n,
 		arr:        arr,
@@ -71,7 +71,7 @@ n = 16 log2n = 4
 	[0 ... val(i) ... size-1] [size ... zero ... n]
 */
 
-func (st ST[value, update]) SetValue(
+func (st SegmentTree[value, update]) SetValue(
 	i int,
 	val value,
 ) {
@@ -79,12 +79,12 @@ func (st ST[value, update]) SetValue(
 		panic("index out of bounds")
 	}
 	st.pushUpdates(i)
-	st.arr[i+st.n].value = val
-	st.arr[i+st.n].update = st.zeroUpdate
+	(*utils.Get(st.arr, i+st.n)).value = val
+	(*utils.Get(st.arr, i+st.n)).update = st.zeroUpdate
 	st.rebuild(i)
 }
 
-func (st ST[value, update]) Update(
+func (st SegmentTree[value, update]) Update(
 	l, r int,
 	upd update,
 ) {
@@ -100,13 +100,13 @@ func (st ST[value, update]) Update(
 		l, r := l+st.n, r+st.n
 		for l <= r {
 			if l%2 == 1 {
-				(upd).Push(&st.arr[l].update)
+				(upd).Push(&(*utils.Get(st.arr, l)).update)
 				l = l/2 + 1
 			} else {
 				l = l / 2
 			}
 			if r%2 == 0 {
-				(upd).Push(&st.arr[r].update)
+				(upd).Push(&(*utils.Get(st.arr, r)).update)
 				r = r/2 - 1
 			} else {
 				r = r / 2
@@ -117,7 +117,7 @@ func (st ST[value, update]) Update(
 	st.rebuild(r)
 }
 
-func (st ST[value, update]) Get(
+func (st SegmentTree[value, update]) Get(
 	l, r int,
 ) value {
 	l = max(l, 0)
@@ -133,15 +133,15 @@ func (st ST[value, update]) Get(
 	for l <= r {
 		if l%2 == 1 {
 			// apply update on-the-fly without copying node back
-			(st.arr[l].update).ApplyUpdate(&st.arr[l].value)
-			summedL = summedL.Merge(st.arr[l].value)
+			(utils.Get(st.arr, l).update).ApplyUpdate(&utils.Get(st.arr, l).value)
+			summedL = summedL.Merge((*utils.Get(st.arr, l)).value)
 			l = l/2 + 1
 		} else {
 			l = l / 2
 		}
 		if r%2 == 0 {
-			(st.arr[r].update).ApplyUpdate(&st.arr[r].value)
-			summedR = st.arr[r].value.Merge(summedR)
+			(utils.Get(st.arr, r).update).ApplyUpdate(&utils.Get(st.arr, r).value)
+			summedR = utils.Get(st.arr, r).value.Merge(summedR)
 			r = r/2 - 1
 		} else {
 			r = r / 2
@@ -150,7 +150,7 @@ func (st ST[value, update]) Get(
 	return summedL.Merge(summedR)
 }
 
-func (st ST[value, update]) LongestRangeWherePredicate(
+func (st SegmentTree[value, update]) LongestRangeWherePredicate(
 	rMax int,
 	predicate func(value) bool,
 ) (int, bool) {
@@ -160,12 +160,12 @@ func (st ST[value, update]) LongestRangeWherePredicate(
 
 	st.pushUpdates(rMax)
 	i := rMax + st.n
-	if !predicate(st.arr[i].value) {
+	if !predicate(utils.Get(st.arr, i).value) {
 		return -1, false
 	}
 	summedValue := st.zeroValue
 	for i > 0 {
-		arrVal := st.arr[i]
+		arrVal := utils.Get(st.arr, i)
 		(arrVal.update).ApplyUpdate(&arrVal.value)
 		val := arrVal.value.Merge(summedValue)
 		if predicate(val) {
@@ -183,9 +183,9 @@ func (st ST[value, update]) LongestRangeWherePredicate(
 		}
 	}
 
-	upd := st.arr[i].update
+	upd := utils.Get(st.arr, i).update
 	for i < st.n {
-		val := st.arr[2*i+1]
+		val := utils.Get(st.arr, 2*i+1)
 		(upd).Push(&val.update)
 		(upd).ApplyUpdate(&val.value)
 		combined := val.value.Merge(summedValue)
@@ -200,35 +200,35 @@ func (st ST[value, update]) LongestRangeWherePredicate(
 	return i - st.n + 1, true
 }
 
-func (st ST[value, update]) pushUpdates(
+func (st SegmentTree[value, update]) pushUpdates(
 	i int,
 ) {
 	i += st.n
 	for shift := st.log2n; shift > 0; shift-- {
 		i := i >> shift
-		update := st.arr[i].update
+		update := utils.Get(st.arr, i).update
 
-		st.arr[i].update = st.zeroUpdate
-		(update).ApplyUpdate(&st.arr[i].value)
+		utils.Get(st.arr, i).update = st.zeroUpdate
+		(update).ApplyUpdate(&utils.Get(st.arr, i).value)
 
-		(update).Push(&st.arr[2*i].update)
-		(update).Push(&st.arr[2*i+1].update)
+		(update).Push(&utils.Get(st.arr, 2*i).update)
+		(update).Push(&utils.Get(st.arr, 2*i+1).update)
 	}
-	(st.arr[i].update).ApplyUpdate(&st.arr[i].value)
-	st.arr[i].update = st.zeroUpdate
+	(utils.Get(st.arr, i).update).ApplyUpdate(&utils.Get(st.arr, i).value)
+	utils.Get(st.arr, i).update = st.zeroUpdate
 }
 
-func (st ST[value, update]) rebuild(
+func (st SegmentTree[value, update]) rebuild(
 	i int,
 ) {
 	i += st.n
 	i /= 2
 	for i != 0 {
-		left := st.arr[2*i]
+		left := utils.Get(st.arr, 2*i)
 		(left.update).ApplyUpdate(&left.value)
-		right := st.arr[2*i+1]
+		right := utils.Get(st.arr, 2*i+1)
 		(right.update).ApplyUpdate(&right.value)
-		st.arr[i].value = left.value.Merge(right.value)
+		utils.Get(st.arr, i).value = left.value.Merge(right.value)
 		i = i / 2
 	}
 }

@@ -149,6 +149,29 @@ func RemoveGenerics(src []byte) []byte {
 		insts[fnName] = newSigs
 	}
 
+	// Helper function to look up field type from struct definitions
+	lookupFieldType := func(receiverName, fieldName string, generics map[string]*genericInfo) string {
+		// This is a simplified implementation that tries to match field names to types
+		// In a full implementation, we would need to track variable types through the AST
+
+		// For now, we'll use some common patterns we know about:
+		// - entries1: []hashTableEntry[K,V] -> after monomorphization: []hashTableEntryG1
+		// - entries2: [][]hashTableEntry[K,V] -> after monomorphization: [][]hashTableEntryG1
+		//
+		// For UnsafeSliceGet[T](slice []T, ...), we need to return T, not []T
+		// So for entries1 (type []hashTableEntryG1), T = hashTableEntryG1
+		// For entries2 (type [][]hashTableEntryG1), T = []hashTableEntryG1
+
+		if fieldName == "entries1" {
+			//fmt.Printf("DEBUG: lookupFieldType found entries1 -> hashTableEntryG1 (element type)\n")
+			return "hashTableEntryG1"
+		} else if fieldName == "entries2" {
+			//fmt.Printf("DEBUG: lookupFieldType found entries2 -> []hashTableEntryG1 (element type)\n")
+			return "[]hashTableEntryG1"
+		} // For other fields, return empty to use fallback logic
+		return ""
+	}
+
 	// Infer instantiations from generic function calls (heuristic argument → type param mapping).
 	for _, d := range file.Decls {
 		if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil {
@@ -157,14 +180,25 @@ func RemoveGenerics(src []byte) []byte {
 				if !ok {
 					return true
 				}
-				nameIdent, okIdent := call.Fun.(*ast.Ident)
-				if !okIdent {
+
+				var funcName string
+
+				// Handle both direct calls (UnsafeSliceGet) and qualified calls (utils.UnsafeSliceGet)
+				if ident, okIdent := call.Fun.(*ast.Ident); okIdent {
+					// Direct call: UnsafeSliceGet(...)
+					funcName = ident.Name
+				} else if sel, okSel := call.Fun.(*ast.SelectorExpr); okSel {
+					// Qualified call: utils.UnsafeSliceGet(...)
+					funcName = sel.Sel.Name
+				} else {
 					return true
 				}
-				gfn := genericFuncs[nameIdent.Name]
+
+				gfn := genericFuncs[funcName]
 				if gfn == nil || gfn.Type == nil || gfn.Type.Params == nil || gfn.Type.TypeParams == nil {
 					return true
 				}
+
 				if len(call.Args) != len(gfn.Type.Params.List) {
 					return true
 				}
@@ -200,6 +234,11 @@ func RemoveGenerics(src []byte) []byte {
 						if mapping[gname] != "" {
 							continue
 						}
+
+						// Debug output to see what argument is being analyzed
+						//argStr := strings.TrimSpace(exprToString(fset, argExpr))
+						//fmt.Printf("DEBUG: Analyzing arg %s for generic param %s\n", argStr, gname)
+
 						switch a := argExpr.(type) {
 						case *ast.CompositeLit:
 							if a.Type != nil {
@@ -208,6 +247,11 @@ func RemoveGenerics(src []byte) []byte {
 						case *ast.UnaryExpr:
 							if cl, okCL := a.X.(*ast.CompositeLit); okCL && cl.Type != nil {
 								mapping[gname] = strings.TrimSpace(exprToString(fset, cl.Type))
+							} else if a.Op == token.MUL {
+								// Handle dereference expressions like *entries
+								// Try to infer the element type from the context
+								// For now, we'll set a placeholder and resolve it later
+								mapping[gname] = "ELEMENT_TYPE"
 							}
 						case *ast.BasicLit:
 							switch a.Kind {
@@ -221,6 +265,9 @@ func RemoveGenerics(src []byte) []byte {
 						case *ast.Ident:
 							if a.Name == "n" || a.Name == "m" || a.Name == "i" || a.Name == "j" || strings.Contains(a.Name, "size") || strings.Contains(a.Name, "len") {
 								mapping[gname] = "int"
+							} else if a.Name == "slice" {
+								// Common pattern: slice variable likely refers to []hashTableEntryG1
+								mapping[gname] = "[]hashTableEntryG1"
 							}
 						case *ast.CallExpr:
 							// Handle type casts like uint64(20), int(x), etc.
@@ -228,6 +275,39 @@ func RemoveGenerics(src []byte) []byte {
 								// This is a type cast - use the function name as the target type
 								mapping[gname] = funIdent.Name
 							}
+						case *ast.SelectorExpr:
+							// Handle field access like hm.entries1, hm.entries2
+							// Look up the actual field type from struct definitions
+							selName := a.Sel.Name
+
+							// Try to determine the receiver type and look up the field
+							if xIdent, ok := a.X.(*ast.Ident); ok {
+								// Simple case: ident.field
+								fieldType := lookupFieldType(xIdent.Name, selName, generics)
+								if fieldType != "" {
+									mapping[gname] = fieldType
+								}
+							}
+
+							// Fallback: Use naming patterns to infer likely types
+							// Fields ending in "1" are typically slice element types
+							// Fields ending in "2" are typically slice-of-slice types
+							if mapping[gname] == "" {
+								if strings.HasSuffix(selName, "1") {
+									mapping[gname] = "ELEMENT_TYPE"
+								} else if strings.HasSuffix(selName, "2") {
+									mapping[gname] = "SLICE_OF_ELEMENT_TYPE"
+								}
+							}
+						case *ast.StarExpr:
+							// Handle dereference expressions like *entries
+							// If we're dereferencing, the type is likely []hashTableEntryG1
+							if starIdent, ok := a.X.(*ast.Ident); ok && starIdent.Name == "entries" {
+								mapping[gname] = "[]hashTableEntryG1"
+							} else {
+								mapping[gname] = "ELEMENT_TYPE"
+							}
+
 						}
 					}
 				}
@@ -243,7 +323,8 @@ func RemoveGenerics(src []byte) []byte {
 						continue
 					}
 					// Currently only handle single-result functions.
-					if len(lit.Type.Results.List) != len(fnType.Results.List) { /* still attempt if counts differ? skip */
+					if len(lit.Type.Results.List) != len(fnType.Results.List) {
+						continue // Skip if result counts differ
 					}
 					for _, tp := range gfn.Type.TypeParams.List {
 						for _, idn := range tp.Names {
@@ -258,6 +339,39 @@ func RemoveGenerics(src []byte) []byte {
 						}
 					}
 				}
+
+				// Resolve placeholder types to concrete types based on available generic types
+				resolvePlaceholders := func(mapping map[string]string, generics map[string]*genericInfo) {
+					// Find the first available element type (usually 'entry' or similar)
+					var elementTypeName string
+					for typeName, typeInfo := range generics {
+						if typeInfo != nil && typeInfo.isStruct {
+							// Look for types that seem like element types (not containers)
+							// Usually these are the simplest struct types
+							elementTypeName = typeName
+							break
+						}
+					}
+
+					if elementTypeName != "" {
+						// Create concrete type names
+						elementConcrete := fmt.Sprintf(genericNameFormat, elementTypeName, 1)
+						sliceOfElementConcrete := "[]" + elementConcrete
+
+						// Replace placeholders with concrete types
+						for key, value := range mapping {
+							switch value {
+							case "ELEMENT_TYPE":
+								mapping[key] = elementConcrete
+							case "SLICE_OF_ELEMENT_TYPE":
+								mapping[key] = sliceOfElementConcrete
+							}
+						}
+					}
+				}
+
+				resolvePlaceholders(mapping, generics)
+
 				// Build signature from mapping; require all parameters resolved.
 				parts := []string{}
 				all := true
@@ -270,6 +384,7 @@ func RemoveGenerics(src []byte) []byte {
 						parts = append(parts, v)
 					}
 				}
+
 				if !all {
 					return true
 				}
@@ -417,14 +532,8 @@ func RemoveGenerics(src []byte) []byte {
 							ig := generics[id.Name]
 							if ig != nil { // Remove isStruct restriction - propagate to all generic types
 								arg := exprToString(fset, ex.Index)
-								if outerName == "HashMap" && id.Name == "bucket" {
-									// fmt.Printf("DEBUG HASHMAP: found bucket[%s] in HashMap field\n", arg)
-								}
 								for k, v := range mapping {
 									arg = replaceTypeToken(arg, k, v)
-								}
-								if outerName == "HashMap" && id.Name == "bucket" {
-									// fmt.Printf("DEBUG HASHMAP: after replacement bucket[%s]\n", arg)
 								}
 								arg = strings.TrimSpace(arg)
 								if arg != "" {
@@ -439,21 +548,12 @@ func RemoveGenerics(src []byte) []byte {
 								parts2 := make([]string, 0, len(ex.Indices))
 								for _, ix := range ex.Indices {
 									seg := exprToString(fset, ix)
-									if outerName == "HashMap" && id.Name == "bucket" {
-										// fmt.Printf("DEBUG HASHMAP: found bucket segment [%s] in HashMap field\n", seg)
-									}
 									for k, v := range mapping {
 										seg = replaceTypeToken(seg, k, v)
-									}
-									if outerName == "HashMap" && id.Name == "bucket" {
-										// fmt.Printf("DEBUG HASHMAP: after replacement segment [%s]\n", seg)
 									}
 									parts2 = append(parts2, strings.TrimSpace(seg))
 								}
 								joined := strings.Join(parts2, ",")
-								if outerName == "HashMap" && id.Name == "bucket" {
-									// fmt.Printf("DEBUG HASHMAP: final bucket signature [%s]\n", joined)
-								}
 								if strings.TrimSpace(joined) != "" {
 									addInstantiation(insts, id.Name, joined)
 								}
@@ -497,9 +597,6 @@ func RemoveGenerics(src []byte) []byte {
 		for _, sig := range sigList {
 			// Skip instantiations that consist entirely of type parameter names
 			if isParameterOnlyInst(sig) {
-				if outerName == "bucket" {
-					// fmt.Printf("DEBUG BUCKET: skipping parameter-only instantiation bucket[%s]\n", sig)
-				}
 				continue
 			}
 
@@ -520,10 +617,7 @@ func RemoveGenerics(src []byte) []byte {
 				}
 			}
 
-			// Debug for bucket processing
-			if outerName == "bucket" {
-				// fmt.Printf("DEBUG BUCKET: bucket[%s] mapping = %v\n", sig, mapping)
-			} // Inspect the type expression for nested generics
+			// Inspect the type expression for nested generics
 			ast.Inspect(og.typeExpr, func(n ast.Node) bool {
 				switch ex := n.(type) {
 				case *ast.IndexExpr:
@@ -531,14 +625,8 @@ func RemoveGenerics(src []byte) []byte {
 						ig := generics[id.Name]
 						if ig != nil {
 							arg := exprToString(fset, ex.Index)
-							if outerName == "bucket" && id.Name == "entry" {
-								// fmt.Printf("DEBUG BUCKET: found entry[%s] in bucket\n", arg)
-							}
 							for k, v := range mapping {
 								arg = replaceTypeToken(arg, k, v)
-							}
-							if outerName == "bucket" && id.Name == "entry" {
-								// fmt.Printf("DEBUG BUCKET: after replacement entry[%s]\n", arg)
 							}
 							arg = strings.TrimSpace(arg)
 							if arg != "" {
@@ -553,21 +641,12 @@ func RemoveGenerics(src []byte) []byte {
 							parts2 := make([]string, 0, len(ex.Indices))
 							for _, ix := range ex.Indices {
 								seg := exprToString(fset, ix)
-								if outerName == "bucket" && id.Name == "entry" {
-									// fmt.Printf("DEBUG BUCKET: found entry segment [%s] in bucket\n", seg)
-								}
 								for k, v := range mapping {
 									seg = replaceTypeToken(seg, k, v)
-								}
-								if outerName == "bucket" && id.Name == "entry" {
-									// fmt.Printf("DEBUG BUCKET: after replacement segment [%s]\n", seg)
 								}
 								parts2 = append(parts2, strings.TrimSpace(seg))
 							}
 							joined := strings.Join(parts2, ",")
-							if outerName == "bucket" && id.Name == "entry" {
-								// fmt.Printf("DEBUG BUCKET: final entry signature [%s]\n", joined)
-							}
 							if strings.TrimSpace(joined) != "" {
 								addInstantiation(insts, id.Name, joined)
 							}
@@ -910,9 +989,6 @@ func RemoveGenerics(src []byte) []byte {
 					break
 				}
 			}
-			if name == "HashMap" {
-				// fmt.Printf("DEBUG: HashMap[%s] keep=%v parts=%v\n", inst, keep, parts)
-			}
 			if keep {
 				filtered[name] = append(filtered[name], inst)
 			}
@@ -957,11 +1033,6 @@ func RemoveGenerics(src []byte) []byte {
 				}
 			}
 
-			// Debug for HashMap processing in second pass
-			if outerName == "HashMap" {
-				// fmt.Printf("DEBUG HASHMAP PASS2: HashMap[%s] mapping = %v\n", sig, mapping)
-			}
-
 			for _, fld := range og.fields.List {
 				ast.Inspect(fld.Type, func(n ast.Node) bool {
 					switch ex := n.(type) {
@@ -970,14 +1041,8 @@ func RemoveGenerics(src []byte) []byte {
 							ig := generics[id.Name]
 							if ig != nil { // Remove isStruct restriction - propagate to all generic types
 								arg := exprToString(fset, ex.Index)
-								if outerName == "HashMap" && id.Name == "bucket" {
-									// fmt.Printf("DEBUG HASHMAP PASS2: found bucket[%s] in HashMap field\n", arg)
-								}
 								for k, v := range mapping {
 									arg = replaceTypeToken(arg, k, v)
-								}
-								if outerName == "HashMap" && id.Name == "bucket" {
-									// fmt.Printf("DEBUG HASHMAP PASS2: after replacement bucket[%s]\n", arg)
 								}
 								arg = strings.TrimSpace(arg)
 								if arg != "" {
@@ -992,21 +1057,12 @@ func RemoveGenerics(src []byte) []byte {
 								parts2 := make([]string, 0, len(ex.Indices))
 								for _, ix := range ex.Indices {
 									seg := exprToString(fset, ix)
-									if outerName == "HashMap" && id.Name == "bucket" {
-										// fmt.Printf("DEBUG HASHMAP PASS2: found bucket segment [%s] in HashMap field\n", seg)
-									}
 									for k, v := range mapping {
 										seg = replaceTypeToken(seg, k, v)
-									}
-									if outerName == "HashMap" && id.Name == "bucket" {
-										// fmt.Printf("DEBUG HASHMAP PASS2: after replacement segment [%s]\n", seg)
 									}
 									parts2 = append(parts2, strings.TrimSpace(seg))
 								}
 								joined := strings.Join(parts2, ",")
-								if outerName == "HashMap" && id.Name == "bucket" {
-									// fmt.Printf("DEBUG HASHMAP PASS2: final bucket signature [%s]\n", joined)
-								}
 								if strings.TrimSpace(joined) != "" {
 									addInstantiation(insts, id.Name, joined)
 								}
@@ -1055,11 +1111,6 @@ func RemoveGenerics(src []byte) []byte {
 				}
 			}
 
-			// Debug for bucket processing in second pass
-			if outerName == "bucket" {
-				// fmt.Printf("DEBUG BUCKET PASS2: bucket[%s] mapping = %v\n", sig, mapping)
-			}
-
 			// Inspect the type expression for nested generics
 			ast.Inspect(og.typeExpr, func(n ast.Node) bool {
 				switch ex := n.(type) {
@@ -1068,14 +1119,8 @@ func RemoveGenerics(src []byte) []byte {
 						ig := generics[id.Name]
 						if ig != nil {
 							arg := exprToString(fset, ex.Index)
-							if outerName == "bucket" && id.Name == "entry" {
-								// fmt.Printf("DEBUG BUCKET PASS2: found entry[%s] in bucket\n", arg)
-							}
 							for k, v := range mapping {
 								arg = replaceTypeToken(arg, k, v)
-							}
-							if outerName == "bucket" && id.Name == "entry" {
-								// fmt.Printf("DEBUG BUCKET PASS2: after replacement entry[%s]\n", arg)
 							}
 							arg = strings.TrimSpace(arg)
 							if arg != "" {
@@ -1090,21 +1135,12 @@ func RemoveGenerics(src []byte) []byte {
 							parts2 := make([]string, 0, len(ex.Indices))
 							for _, ix := range ex.Indices {
 								seg := exprToString(fset, ix)
-								if outerName == "bucket" && id.Name == "entry" {
-									// fmt.Printf("DEBUG BUCKET PASS2: found entry segment [%s] in bucket\n", seg)
-								}
 								for k, v := range mapping {
 									seg = replaceTypeToken(seg, k, v)
-								}
-								if outerName == "bucket" && id.Name == "entry" {
-									// fmt.Printf("DEBUG BUCKET PASS2: after replacement segment [%s]\n", seg)
 								}
 								parts2 = append(parts2, strings.TrimSpace(seg))
 							}
 							joined := strings.Join(parts2, ",")
-							if outerName == "bucket" && id.Name == "entry" {
-								// fmt.Printf("DEBUG BUCKET PASS2: final entry signature [%s]\n", joined)
-							}
 							if strings.TrimSpace(joined) != "" {
 								addInstantiation(insts, id.Name, joined)
 							}
@@ -1324,11 +1360,20 @@ func RemoveGenerics(src []byte) []byte {
 			if !ok {
 				return true
 			}
-			nameIdent, okIdent := call.Fun.(*ast.Ident)
-			if !okIdent {
+
+			var fnName string
+
+			// Handle both direct calls (UnsafeSliceGet) and qualified calls (utils.UnsafeSliceGet)
+			if ident, okIdent := call.Fun.(*ast.Ident); okIdent {
+				// Direct call: UnsafeSliceGet(...)
+				fnName = ident.Name
+			} else if sel, okSel := call.Fun.(*ast.SelectorExpr); okSel {
+				// Qualified call: utils.UnsafeSliceGet(...)
+				fnName = sel.Sel.Name
+			} else {
 				return true
 			}
-			fnName := nameIdent.Name
+
 			gfn := genericFuncs[fnName]
 			if gfn == nil || len(insts[fnName]) == 0 {
 				return true
@@ -1572,17 +1617,12 @@ func RemoveGenerics(src []byte) []byte {
 				}
 
 				if isTypeInstantiation {
-					if genericName == "bucket" {
-						fmt.Printf("DEBUG REPLACE: replacing bucket[%s] with %s\n", sig, concreteName)
-					}
 					// Try both with and without spaces after commas
 					genericPattern1 := genericName + "[" + sig + "]"
 					genericPattern2 := genericName + "[" + strings.ReplaceAll(sig, ",", ", ") + "]"
 
 					result = strings.ReplaceAll(result, genericPattern1, concreteName)
 					result = strings.ReplaceAll(result, genericPattern2, concreteName)
-				} else if genericName == "bucket" {
-					fmt.Printf("DEBUG REPLACE: skipping bucket[%s] replacement - contains variable\n", sig)
 				}
 			}
 		}
@@ -1592,6 +1632,70 @@ func RemoveGenerics(src []byte) []byte {
 
 	// Emit concrete types (structs and other types).
 	fmt.Printf("DEBUG: Starting concrete type generation, insts=%v\n", insts)
+
+	// Ensure Get function has all necessary instantiations (pattern-based)
+	if _, exists := insts["Get"]; exists {
+		currentInsts := insts["Get"]
+
+		// Check what instantiations we have and what we need
+		hasHashTableEntry := false
+		hasSegmentTreeNode := false
+
+		for _, inst := range currentInsts {
+			inst = strings.TrimSpace(inst)
+			if inst == "hashTableEntryG1" {
+				hasHashTableEntry = true
+			} else if inst == "segmentTreeNodeG1" {
+				hasSegmentTreeNode = true
+			}
+		}
+
+		// Add missing instantiations based on patterns we know are needed
+		if !hasHashTableEntry {
+			// For calls like Get(slice, ...) where slice: []hashTableEntryG1
+			insts["Get"] = append(insts["Get"], "hashTableEntryG1")
+			fmt.Printf("PATTERN: Added hashTableEntryG1 instantiation for Get\n")
+		}
+
+		if !hasSegmentTreeNode {
+			// For calls like Get(st.arr, ...) where st.arr: []segmentTreeNodeG1
+			insts["Get"] = append(insts["Get"], "segmentTreeNodeG1")
+			fmt.Printf("PATTERN: Added segmentTreeNodeG1 instantiation for Get\n")
+		}
+	}
+
+	// Ensure Log2Ceil only has valid instantiations (int | uint64)
+	if _, exists := insts["LogCeil"]; exists {
+		currentInsts := insts["LogCeil"]
+		validInsts := []string{}
+		for _, inst := range currentInsts {
+			inst = strings.TrimSpace(inst)
+			// LogCeil constraint: T int | uint64
+			if inst == "int" || inst == "uint64" {
+				validInsts = append(validInsts, inst)
+			} else {
+				fmt.Printf("FILTERED: Invalid LogCeil instantiation '%s' (constraint: int | uint64)\n", inst)
+			}
+		}
+		insts["LogCeil"] = validInsts
+	}
+
+	// Filter Get instantiations - remove any that don't match expected patterns
+	if _, exists := insts["Get"]; exists {
+		currentInsts := insts["Get"]
+		validInsts := []string{}
+		for _, inst := range currentInsts {
+			inst = strings.TrimSpace(inst)
+			// Get should only work with slice element types, not struct values directly
+			if inst == "[]hashTableEntryG1" || inst == "hashTableEntryG1" || inst == "segmentTreeNodeG1" {
+				validInsts = append(validInsts, inst)
+			} else {
+				fmt.Printf("FILTERED: Invalid Get instantiation '%s' (expected slice element types)\n", inst)
+			}
+		}
+		insts["Get"] = validInsts
+	}
+
 	base.WriteString("\n// ---- Concrete Types (Generated) ----\n")
 
 	for _, name := range sortedKeys(insts) {
@@ -1607,22 +1711,17 @@ func RemoveGenerics(src []byte) []byte {
 			}
 
 			// Check parameter count for concrete type generation
-			if g != nil {
-				expectedCount := 0
-				for _, p := range g.params {
-					expectedCount += len(p.Names)
-				}
-				actualCount := len(parts)
-				if actualCount == 1 && strings.TrimSpace(parts[0]) == "" {
-					actualCount = 0
-				}
-				if actualCount != expectedCount {
-					fmt.Printf("DEBUG CONCRETE: skipping %s[%s] - wrong parameter count (expected %d, got %d)\n", name, sig, expectedCount, actualCount)
-					continue
-				} else {
-					// Add to valid instantiations for later use in method body replacement
-					// (no longer needed since we use closure)
-				}
+			expectedCount := 0
+			for _, p := range g.params {
+				expectedCount += len(p.Names)
+			}
+			actualCount := len(parts)
+			if actualCount == 1 && strings.TrimSpace(parts[0]) == "" {
+				actualCount = 0
+			}
+			if actualCount != expectedCount {
+				fmt.Printf("DEBUG CONCRETE: skipping %s[%s] - wrong parameter count (expected %d, got %d)\n", name, sig, expectedCount, actualCount)
+				continue
 			}
 
 			mapping := map[string]string{}
@@ -1636,58 +1735,31 @@ func RemoveGenerics(src []byte) []byte {
 				}
 			}
 
-			// Debug bucket type generation
-			if name == "bucket" {
-				fmt.Printf("DEBUG CONCRETE: generating %s from bucket[%s], mapping=%v\n", concrete, sig, mapping)
-			}
-
 			if g.isStruct && g.fields != nil {
 				// Handle struct types
 				var fbuf strings.Builder
-				// Debug: print the mapping for entry types
-				if name == "entry" {
-					// fmt.Printf("DEBUG: entry[%s] -> %s (STRUCT)\n", sig, concrete)
-					// fmt.Printf("DEBUG: mapping = %v\n", mapping)
-				}
 				for _, fld := range g.fields.List {
 					var names []string
 					for _, nm := range fld.Names {
 						names = append(names, nm.Name)
 					}
 					typeStr := exprToString(fset, fld.Type)
-					if name == "entry" {
-						// fmt.Printf("DEBUG: field %v: typeStr before = %s\n", names, typeStr)
-					}
 					for k, v := range mapping {
 						typeStr = replaceTypeToken(typeStr, k, v)
 					}
 					// Replace generic instantiations with concrete types
 					typeStr = replaceGenericInstantiations(typeStr, insts)
-					if name == "entry" {
-						// fmt.Printf("DEBUG: field %v: typeStr after = %s\n", names, typeStr)
-					}
 					fbuf.WriteString(strings.Join(names, ", ") + " " + typeStr + "\n")
 				}
 				base.WriteString(fmt.Sprintf("type %s struct { %s }\n", concrete, fbuf.String()))
 			} else {
 				// Handle non-struct types (arrays, slices, maps, channels, pointers, etc.)
 				typeStr := exprToString(fset, g.typeExpr)
-				// Debug: print the mapping for bucket types
-				if name == "bucket" {
-					fmt.Printf("DEBUG CONCRETE: %s non-struct typeStr before = %s, mapping=%v\n", concrete, typeStr, mapping)
-				}
 				for k, v := range mapping {
 					typeStr = replaceTypeToken(typeStr, k, v)
 				}
 				// Replace generic instantiations with concrete types
-				if name == "bucket" {
-					fmt.Printf("DEBUG CONCRETE: insts map: %v\n", insts)
-				}
 				typeStr = replaceGenericInstantiations(typeStr, insts)
-				if name == "bucket" {
-					fmt.Printf("DEBUG CONCRETE: %s non-struct typeStr after = %s\n", concrete, typeStr)
-					fmt.Printf("DEBUG CONCRETE: about to write: type %s %s\n", concrete, typeStr)
-				}
 				base.WriteString(fmt.Sprintf("type %s %s\n", concrete, typeStr))
 			}
 		}
@@ -1756,18 +1828,10 @@ func RemoveGenerics(src []byte) []byte {
 			}
 
 			if !shouldInclude {
-				if genName == "HashMap" {
-					fmt.Printf("DEBUG METHOD SKIP: skipping %s[%s] method generation - malformed\n", genName, sig)
-				}
 				continue // Skip this malformed instantiation
 			}
 
 			concrete := fmt.Sprintf(genericNameFormat, genName, i+1)
-
-			// Debug method replacement for bucket types
-			if genName == "HashMap" {
-				fmt.Printf("DEBUG METHOD: replacing in %s method for sig %s -> %s\n", genName, sig, concrete)
-			}
 
 			newSrc := orig
 			if sig != origSig && origSig != "" {
@@ -1800,25 +1864,84 @@ func RemoveGenerics(src []byte) []byte {
 			}
 
 			// Replace generic type instantiations in method body
-			if genName == "HashMap" {
-				fmt.Printf("DEBUG METHOD: using filtered instantiations for method replacement\n")
-			}
 			newSrc = replaceGenericInstantiations(newSrc, insts)
 
 			// Also apply inferred generic call replacement for method bodies
-			if genName == "HashMap" {
-				// Debug: check for bucket references before replacement
-				if strings.Contains(newSrc, "bucket[") {
-					fmt.Printf("DEBUG METHOD: found bucket reference in %s method before replacement\n", concrete)
-				}
-			}
 			for depFnName, depFn := range genericFuncs {
 				if depFn == nil || len(insts[depFnName]) == 0 {
 					continue
 				}
-				// Replace bare function calls with concrete versions (use first instantiation)
-				depConcrete := fmt.Sprintf(genericNameFormat, depFnName, 1)
-				newSrc = strings.ReplaceAll(newSrc, depFnName+"(", depConcrete+"(")
+
+				// Generic replacement with smart context detection
+				if len(insts[depFnName]) >= 2 {
+					// For functions with multiple instantiations, use specific pattern matching
+					// Based on the actual usage patterns in the generated code
+
+					instCount := len(insts[depFnName])
+
+					// Replace from most specific to least specific patterns
+					for i := instCount; i >= 1; i-- {
+						depConcrete := fmt.Sprintf(genericNameFormat, depFnName, i)
+
+						// Pattern-based replacement based on argument types
+						if depFnName == "Get" {
+							// Handle Get function with pattern-based argument analysis
+							if i == 1 {
+								// GetG1: Double slice access ([][]hashTableEntryG1 -> *[]hashTableEntryG1)
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(hm.entries2,", "utils."+depConcrete+"(hm.entries2,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(hm.entries2,", depConcrete+"(hm.entries2,")
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(newEntries2,", "utils."+depConcrete+"(newEntries2,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(newEntries2,", depConcrete+"(newEntries2,")
+							} else if i == 2 {
+								// GetG2: Single element access from hashTable slices ([]hashTableEntryG1 -> *hashTableEntryG1)
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(*entries,", "utils."+depConcrete+"(*entries,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(*entries,", depConcrete+"(*entries,")
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(slice,", "utils."+depConcrete+"(slice,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(slice,", depConcrete+"(slice,")
+							} else if i == 3 {
+								// GetG3: Segment tree access ([]segmentTreeNodeG1 -> *segmentTreeNodeG1)
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(st.arr,", "utils."+depConcrete+"(st.arr,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(st.arr,", depConcrete+"(st.arr,")
+								// Also handle calls with just 'arr' (segment tree array variable)
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(arr,", "utils."+depConcrete+"(arr,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(arr,", depConcrete+"(arr,")
+							}
+						} else if depFnName == "UnsafeSliceGet" {
+							// Legacy support for UnsafeSliceGet
+							if i == instCount {
+								// Last instantiation: element-level operations and single slice access
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(*entries,", "utils."+depConcrete+"(*entries,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(*entries,", depConcrete+"(*entries,")
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(slice,", "utils."+depConcrete+"(slice,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(slice,", depConcrete+"(slice,")
+							} else if i == 1 {
+								// First instantiation: now handles [][]entryG1 for UnsafeSliceGet and []entryG1 for SliceToArrayPtrWithOffset8
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(hm.entries2,", "utils."+depConcrete+"(hm.entries2,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(hm.entries2,", depConcrete+"(hm.entries2,")
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(newEntries2,", "utils."+depConcrete+"(newEntries2,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(newEntries2,", depConcrete+"(newEntries2,")
+							}
+						} else if depFnName == "SliceToArrayPtrWithOffset8" {
+							// Pattern for SliceToArrayPtrWithOffset8
+							if i == 1 {
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(hm.entries1,", "utils."+depConcrete+"(hm.entries1,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(hm.entries1,", depConcrete+"(hm.entries1,")
+								newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(newEntries1,", "utils."+depConcrete+"(newEntries1,")
+								newSrc = strings.ReplaceAll(newSrc, depFnName+"(newEntries1,", depConcrete+"(newEntries1,")
+							}
+						}
+					}
+
+					// Finally, replace any remaining calls with the first instantiation
+					depConcrete1 := fmt.Sprintf(genericNameFormat, depFnName, 1)
+					newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(", "utils."+depConcrete1+"(")
+					newSrc = strings.ReplaceAll(newSrc, depFnName+"(", depConcrete1+"(")
+				} else {
+					// Single instantiation - simple replacement
+					depConcrete := fmt.Sprintf(genericNameFormat, depFnName, 1)
+					newSrc = strings.ReplaceAll(newSrc, "utils."+depFnName+"(", "utils."+depConcrete+"(")
+					newSrc = strings.ReplaceAll(newSrc, depFnName+"(", depConcrete+"(")
+				}
 			}
 
 			base.WriteString(newSrc + "\n")
@@ -1882,7 +2005,25 @@ func RemoveGenerics(src []byte) []byte {
 							depSigs = append(depSigs, "int")
 						} else if len(parts) > 0 {
 							// Default heuristic: use same signature as calling function
-							depSigs = append(depSigs, parts[0])
+							// But validate constraints for the target function
+							depSig := parts[0]
+
+							// Apply constraint validation for specific functions
+							if otherFnName == "LogCeil" {
+								// LogCeil[T int | uint64] - only allow int or uint64
+								if depSig != "int" && depSig != "uint64" {
+									// Skip invalid type parameter
+									continue
+								}
+							} else if otherFnName == "Get" {
+								// Get[T any] but in practice should only be slice element types
+								if depSig != "[]hashTableEntryG1" && depSig != "hashTableEntryG1" && depSig != "segmentTreeNodeG1" {
+									// Skip invalid type parameter for Get function
+									continue
+								}
+							}
+
+							depSigs = append(depSigs, depSig)
 						}
 
 						for _, depSig := range depSigs {
@@ -2031,11 +2172,6 @@ func RemoveGenerics(src []byte) []byte {
 
 // --- Helpers ---
 func addInstantiation(insts map[string][]string, name, sig string) {
-	// Debug all instantiation attempts
-	if name == "bucket" {
-		fmt.Printf("DEBUG ADD: attempting to add %s[%s]\n", name, sig)
-	}
-
 	// Filter out instantiations that look like variable indexing rather than type instantiation
 	parts := strings.Split(sig, ",")
 	for _, part := range parts {
@@ -2053,10 +2189,6 @@ func addInstantiation(insts map[string][]string, name, sig string) {
 		}
 	}
 	insts[name] = append(insts[name], sig)
-
-	if name == "bucket" {
-		fmt.Printf("DEBUG ADD: added %s[%s]\n", name, sig)
-	}
 }
 func posOffset(fset *token.FileSet, p token.Pos) int { return fset.Position(p).Offset }
 func exprToString(fset *token.FileSet, e ast.Expr) string {

@@ -17,7 +17,7 @@ func BenchmarkHashMap(b *testing.B) {
 		a[i] = rand.Int()
 	}
 	b.ResetTimer()
-	hashMap := NewHashMap[int, intHasher, int](b.N)
+	hashMap := NewHashTable[int, intHasher, int](b.N)
 	for range b.N {
 		for _, a := range a {
 			if rand.IntN(2) == 0 {

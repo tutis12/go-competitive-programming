@@ -1,0 +1,9 @@
+=== RUN   TestMergeEverything
+adding package hash_map because used in main
+adding package debug because used in main
+adding package fastio because used in main
+adding package segment_tree_iter because used in main
+adding package utils because used in hash_map
+--- PASS: TestMergeEverything (0.07s)
+PASS
+ok  	main/generator	0.073s

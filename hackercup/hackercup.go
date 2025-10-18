@@ -11,23 +11,36 @@ import (
 )
 
 func Hackercup(stdin *fastio.Reader, stdout *fastio.Writer) {
-	defer stdout.WriteAll()
 	defer debug.Recover()
 	debug.PrintSeconds()
 	tests := stdin.Uint()
 	outputs := make([]output, tests)
-	wgs := make([]sync.WaitGroup, tests)
+	testWGs := make([]sync.WaitGroup, tests)
+
+	for i := range tests {
+		testWGs[i].Add(1)
+	}
+
 	doneCounter := atomic.Uint64{}
 	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
+	outputWG := sync.WaitGroup{}
+	outputWG.Add(1)
+	debug.Go(func() {
+		defer stdout.WriteAll()
+		defer outputWG.Done()
+		for i := range tests {
+			testWGs[i].Wait()
+			stdout.Printf("Case #%d: ", i+1)
+			outputs[i].Print(stdout)
+		}
+	})
 	for i := range tests {
-		wgs[i].Add(1)
 		input := input{}
 		input.Read(stdin)
-		go func() {
-			defer debug.Recover()
+		debug.Go(func() {
 			start := time.Now()
 			outputs[i] = solve(&input)
-			wgs[i].Done()
+			testWGs[i].Done()
 			doneCnt := doneCounter.Add(1)
 			fmt.Fprintf(
 				os.Stderr,
@@ -37,13 +50,7 @@ func Hackercup(stdin *fastio.Reader, stdout *fastio.Writer) {
 				tests,
 				time.Since(start),
 			)
-		}()
+		})
 	}
-	for i := range tests {
-		wgs[i].Wait()
-		stdout.String("Case #")
-		stdout.Uint(i+1, ':')
-		stdout.String(" ")
-		outputs[i].Print(stdout)
-	}
+	outputWG.Wait()
 }
