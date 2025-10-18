@@ -38,7 +38,7 @@ func NewSegmentTree[
 	if size <= 0 {
 		panic("size must be positive")
 	}
-	log2n := utils.LogCeil(size)
+	log2n := utils.LogCeil(uint64(size))
 	n := 1 << log2n
 	arr := make([]segmentTreeNode[value, update], 2*n)
 	for i := range size {

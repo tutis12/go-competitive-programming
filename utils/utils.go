@@ -5,23 +5,21 @@ import (
 	"unsafe"
 )
 
-func LogFloor[T int | uint64](x T) int {
-	x64 := uint64(x)
-	if x64 == 0 {
+func LogFloor(x uint64) int {
+	if x == 0 {
 		panic("Log2(0) is undefined")
 	}
-	return 63 - bits.LeadingZeros64(x64)
+	return 63 - bits.LeadingZeros64(x)
 }
 
-func LogCeil[T int | uint64](x T) int {
-	x64 := uint64(x)
-	if x64 == 0 {
+func LogCeil(x uint64) int {
+	if x == 0 {
 		panic("Log2(0) is undefined")
 	}
-	if x64 == 1 {
+	if x == 1 {
 		return 0
 	}
-	return 1 + LogFloor(x64-1)
+	return 1 + LogFloor(x-1)
 }
 
 func IsPowerOf2[T int | uint64](x T) bool {
@@ -50,9 +48,9 @@ func Transpose(X *[][]int) {
 	n := len(M)
 	m := len(M[0])
 	M2 := make([][]int, m)
-	for i := 0; i < m; i++ {
+	for i := range m {
 		M2[i] = make([]int, n)
-		for j := 0; j < n; j++ {
+		for j := range n {
 			M2[i][j] = M[j][i]
 		}
 	}

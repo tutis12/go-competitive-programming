@@ -11,7 +11,14 @@ import (
 )
 
 func Hackercup(stdin *fastio.Reader, stdout *fastio.Writer) {
+	start := time.Now()
 	defer debug.Recover()
+	defer func() {
+		stdout.WriteAll()
+		time.Sleep(time.Millisecond)
+		fmt.Fprintf(os.Stderr, "done! took %s\n", time.Since(start))
+	}()
+
 	debug.PrintSeconds()
 	tests := stdin.Uint()
 	outputs := make([]output, tests)
@@ -23,34 +30,30 @@ func Hackercup(stdin *fastio.Reader, stdout *fastio.Writer) {
 
 	doneCounter := atomic.Uint64{}
 	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
-	outputWG := sync.WaitGroup{}
-	outputWG.Add(1)
 	debug.Go(func() {
-		defer stdout.WriteAll()
-		defer outputWG.Done()
 		for i := range tests {
-			testWGs[i].Wait()
-			stdout.Printf("Case #%d: ", i+1)
-			outputs[i].Print(stdout)
+			input := input{}
+			input.Read(stdin)
+			debug.Go(func() {
+				start := time.Now()
+				outputs[i] = solve(&input)
+				testWGs[i].Done()
+				doneCnt := doneCounter.Add(1)
+				fmt.Fprintf(
+					os.Stderr,
+					"test %d (%d/%d) took %s\n",
+					i+1,
+					doneCnt,
+					tests,
+					time.Since(start),
+				)
+			})
 		}
 	})
+
 	for i := range tests {
-		input := input{}
-		input.Read(stdin)
-		debug.Go(func() {
-			start := time.Now()
-			outputs[i] = solve(&input)
-			testWGs[i].Done()
-			doneCnt := doneCounter.Add(1)
-			fmt.Fprintf(
-				os.Stderr,
-				"test %d (%d/%d) took %s\n",
-				i+1,
-				doneCnt,
-				tests,
-				time.Since(start),
-			)
-		})
+		testWGs[i].Wait()
+		stdout.Printf("Case #%d: ", i+1)
+		outputs[i].Print(stdout)
 	}
-	outputWG.Wait()
 }

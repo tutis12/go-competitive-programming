@@ -33,7 +33,7 @@ type HashTable[K comparable, H Hasher, V any] struct {
 func NewHashTable[K comparable, H Hasher, V any](
 	size int,
 ) *HashTable[K, H, V] {
-	log2Size := utils.LogCeil(size*2 + 1)
+	log2Size := utils.LogCeil(uint64(size*2 + 1))
 	return &HashTable[K, H, V]{
 		entries1: make([]hashTableEntry[K, V], (1<<log2Size)+maxOffset),
 		entries2: make([][]hashTableEntry[K, V], 1<<log2Size),
