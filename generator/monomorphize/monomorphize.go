@@ -26,10 +26,8 @@ type instRecord struct {
 	argTypes []types.Type // types for hoistability checks (nil => unknown => non-hoistable)
 }
 
-// MonomorphizeIterative does what Monomorphize does, but performs it in small
-// steps: on each iteration it materializes at most one instantiation and
-// rewrites its callsites/usages, then regenerates the source and reparses it.
-// This favors correctness over speed on small binaries.
+// --- DROP-IN REPLACEMENT: Monomorphize with debug formatting on failure ---
+
 func Monomorphize(src []byte) []byte {
 	const maxIters = 2000 // hard stop to avoid accidental infinite loops
 
@@ -44,7 +42,7 @@ func Monomorphize(src []byte) []byte {
 			panic(err)
 		}
 
-		// Index generic decls / methods (same as your eager version)
+		// Index generic decls / methods
 		genTypes := map[string]*ast.TypeSpec{}
 		genFuncs := map[string]*ast.FuncDecl{}
 		methodsByRecv := map[string][]*ast.FuncDecl{}
@@ -74,7 +72,7 @@ func Monomorphize(src []byte) []byte {
 			}
 		}
 
-		// Type-check current file
+		// Type-check current file (must compile every iteration).
 		info := &types.Info{
 			Types:      make(map[ast.Expr]types.TypeAndValue),
 			Defs:       make(map[*ast.Ident]types.Object),
@@ -85,10 +83,19 @@ func Monomorphize(src []byte) []byte {
 		}
 		conf := &types.Config{
 			Importer: importer.Default(),
-			Error:    func(err error) { panic(err) },
+			// Fail fast on any type error to preserve the "always compiles" invariant.
+			Error: func(err error) { panic(err) },
 		}
 		if _, err := conf.Check(file.Name.Name, fset, []*ast.File{file}, info); err != nil {
 			panic(err)
+		}
+
+		// ---- Hoist local (block-scoped) types to package scope first ----
+		if hoistLocalTypes(file, fset, info) {
+			// DEBUG-SAFE FORMAT: if formatting fails, print the offending line/col.
+			src = formatToBytesOrDie(fset, file)
+			// restart iteration with fresh parse/type info
+			continue
 		}
 
 		// Discover instantiations in this iteration
@@ -253,17 +260,12 @@ func Monomorphize(src []byte) []byte {
 				}
 			}
 
-			// Rewrite usages for THIS instantiation only
-			toRewrite := map[instKey]string{k: concreteName}
-			rewritten := rewriteInstantiations(file, toRewrite, callKeys)
-			_ = rewritten // we expect it to be true in practice
+			// Rewrite usages for ALL known instantiations so nested ones get updated too
+			_ = rewriteInstantiations(file, created, callKeys)
 
-			// Emit fresh source and restart the outer loop with a new parse/typecheck.
-			var out bytes.Buffer
-			if err := format.Node(&out, fset, file); err != nil {
-				panic(err)
-			}
-			src = out.Bytes()
+			// DEBUG-SAFE FORMAT: if formatting fails, print the offending line/col.
+			src = formatToBytesOrDie(fset, file)
+
 			madeChange = true
 			break // <-- enforce "one replacement per iteration"
 		}
@@ -274,7 +276,364 @@ func Monomorphize(src []byte) []byte {
 		}
 	}
 
-	panic("MonomorphizeIterative: exceeded iteration limit; possible cycle or non-hoistable only")
+	panic("Monomorphize: exceeded iteration limit; possible cycle or non-hoistable only")
+}
+
+// --- helpers used only by Monomorphize above ---
+
+// formatToBytesOrDie formats the file. If formatting fails, it prints the
+// offending line/column (and surrounding context) to stdout, then panics
+// with the original error.
+func formatToBytesOrDie(fset *token.FileSet, file *ast.File) []byte {
+	var out bytes.Buffer
+	if err := format.Node(&out, fset, file); err != nil {
+		debugFormatFailure(fset, file, err)
+		panic(err)
+	}
+	return out.Bytes()
+}
+
+func debugFormatFailure(fset *token.FileSet, file *ast.File, err error) {
+	fmt.Printf("\n--- format.Node failed: %v ---\n", err)
+
+	// Best-effort print current source using printer (less strict than format.Node).
+	var buf bytes.Buffer
+	if e := printer.Fprint(&buf, fset, file); e != nil {
+		fmt.Println("printer.Fprint also failed; dumping AST instead:")
+		var astBuf bytes.Buffer
+		_ = ast.Fprint(&astBuf, fset, file, nil)
+		fmt.Print(astBuf.String())
+		return
+	}
+	src := buf.Bytes()
+
+	// Pull "line:col" out of the error message (looks like "(334:35:" ...).
+	line, col := parseLineCol(err.Error())
+	lines := bytes.Split(src, []byte("\n"))
+
+	if line >= 1 && line <= len(lines) {
+		from := line - 3
+		if from < 1 {
+			from = 1
+		}
+		to := line + 3
+		if to > len(lines) {
+			to = len(lines)
+		}
+		for i := from; i <= to; i++ {
+			prefix := "   "
+			if i == line {
+				prefix = ">>>"
+			}
+			fmt.Printf("%s %6d | %s\n", prefix, i, lines[i-1])
+			if i == line && col >= 1 {
+				if col > len(lines[i-1]) {
+					col = len(lines[i-1])
+				}
+				spaces := bytes.Repeat([]byte(" "), col-1)
+				fmt.Printf("            %s^\n", spaces)
+			}
+		}
+	} else {
+		// If we couldn't parse the position, just dump the whole source.
+		fmt.Println("--- could not parse line:col from error; dumping source ---")
+		fmt.Print(string(src))
+		fmt.Println()
+	}
+}
+
+// parseLineCol extracts the first "(\d+:\d+:" pattern's numbers from msg.
+// Returns 0,0 if not found.
+func parseLineCol(msg string) (int, int) {
+	// Find the first '(' then read digits:digits:
+	i := -1
+	for idx := 0; idx < len(msg); idx++ {
+		if msg[idx] == '(' {
+			i = idx + 1
+			break
+		}
+	}
+	if i < 0 {
+		return 0, 0
+	}
+	// read line
+	line := 0
+	for i < len(msg) && msg[i] >= '0' && msg[i] <= '9' {
+		line = line*10 + int(msg[i]-'0')
+		i++
+	}
+	if i >= len(msg) || msg[i] != ':' {
+		return 0, 0
+	}
+	i++
+	// read col
+	col := 0
+	for i < len(msg) && msg[i] >= '0' && msg[i] <= '9' {
+		col = col*10 + int(msg[i]-'0')
+		i++
+	}
+	// require a trailing ':' like "(334:35:"
+	if i >= len(msg) || msg[i] != ':' {
+		return 0, 0
+	}
+	return line, col
+}
+
+// ---- Local type hoisting ----
+
+// buildHoistedName creates a stable exported name for a local type.
+func buildHoistedName(funcName string, blockPath []int, localName string, taken map[string]bool) string {
+	var b strings.Builder
+	b.WriteString("Local_")
+	if funcName == "" {
+		funcName = "anon"
+	}
+	b.WriteString(funcName)
+	for _, idx := range blockPath {
+		fmt.Fprintf(&b, "_B%d", idx)
+	}
+	b.WriteString("_")
+	if localName == "" {
+		localName = "T"
+	}
+	// Ensure exported
+	if c := localName[0]; c >= 'a' && c <= 'z' {
+		localName = strings.ToUpper(localName[:1]) + localName[1:]
+	}
+	b.WriteString(localName)
+
+	base := b.String()
+	name := base
+	suf := 2
+	for taken[name] {
+		name = fmt.Sprintf("%s_%d", base, suf)
+		suf++
+	}
+	taken[name] = true
+	return name
+}
+
+func collectTopLevelNames(file *ast.File) map[string]bool {
+	taken := map[string]bool{}
+	for _, d := range file.Decls {
+		switch dd := d.(type) {
+		case *ast.GenDecl:
+			for _, sp := range dd.Specs {
+				switch s := sp.(type) {
+				case *ast.TypeSpec:
+					if s.Name != nil {
+						taken[s.Name.Name] = true
+					}
+				case *ast.ValueSpec:
+					for _, n := range s.Names {
+						taken[n.Name] = true
+					}
+				}
+			}
+		case *ast.FuncDecl:
+			if dd.Name != nil {
+				taken[dd.Name.Name] = true
+			}
+		}
+	}
+	return taken
+}
+
+// hoistLocalTypes finds block-local type declarations in function bodies,
+// lifts them to package scope with exported, globally-unique names,
+// rewrites all references (Defs/Uses) to the new names, and removes the
+// original local declarations. Returns true if the file was modified.
+func hoistLocalTypes(file *ast.File, fset *token.FileSet, info *types.Info) bool {
+	changed := false
+	taken := collectTopLevelNames(file)
+
+	type localDef struct {
+		obj      *types.TypeName
+		newName  string
+		spec     *ast.TypeSpec
+		genDecl  *ast.GenDecl
+		declStmt *ast.DeclStmt
+		block    *ast.BlockStmt
+	}
+
+	var locals []*localDef
+	localByObj := map[*types.TypeName]*localDef{}
+
+	// Per-function traversal with a block path to build stable exported names.
+	var processBlock func(funcName string, blk *ast.BlockStmt, path []int, counter *int)
+	processBlock = func(funcName string, blk *ast.BlockStmt, path []int, counter *int) {
+		if blk == nil {
+			return
+		}
+		for _, st := range blk.List {
+			*counter++
+			cur := append(path, *counter)
+
+			// Collect local type specs declared via "type" inside blocks.
+			if ds, ok := st.(*ast.DeclStmt); ok {
+				if gd, ok := ds.Decl.(*ast.GenDecl); ok && gd.Tok == token.TYPE {
+					for _, sp := range gd.Specs {
+						ts, ok := sp.(*ast.TypeSpec)
+						if !ok || ts.Name == nil {
+							continue
+						}
+						objI := info.Defs[ts.Name]
+						tn, _ := objI.(*types.TypeName)
+						if tn == nil {
+							continue
+						}
+						// Skip package-scope types.
+						if pkg := tn.Pkg(); pkg != nil && tn.Parent() == pkg.Scope() {
+							continue
+						}
+						// Don't hoist locals that reference type parameters (they'd become undefined).
+						if typeExprMentionsTypeParams(ts.Type, info) {
+							continue
+						}
+
+						newName := buildHoistedName(funcName, cur, ts.Name.Name, taken)
+						ld := &localDef{
+							obj:      tn,
+							newName:  newName,
+							spec:     ts,
+							genDecl:  gd,
+							declStmt: ds,
+							block:    blk,
+						}
+						locals = append(locals, ld)
+						localByObj[tn] = ld
+					}
+				}
+			}
+
+			// Recurse into common nested blocks.
+			switch s := st.(type) {
+			case *ast.BlockStmt:
+				processBlock(funcName, s, cur, counter)
+			case *ast.IfStmt:
+				processBlock(funcName, s.Body, cur, counter)
+				if s.Else != nil {
+					if eb, ok := s.Else.(*ast.BlockStmt); ok {
+						processBlock(funcName, eb, cur, counter)
+					} else if es, ok := s.Else.(*ast.IfStmt); ok {
+						processBlock(funcName, es.Body, cur, counter)
+						if es.Else != nil {
+							if eb2, ok := es.Else.(*ast.BlockStmt); ok {
+								processBlock(funcName, eb2, cur, counter)
+							}
+						}
+					}
+				}
+			case *ast.ForStmt:
+				processBlock(funcName, s.Body, cur, counter)
+			case *ast.RangeStmt:
+				processBlock(funcName, s.Body, cur, counter)
+			case *ast.SwitchStmt:
+				processBlock(funcName, s.Body, cur, counter)
+			case *ast.TypeSwitchStmt:
+				processBlock(funcName, s.Body, cur, counter)
+			case *ast.SelectStmt:
+				processBlock(funcName, s.Body, cur, counter)
+			}
+		}
+	}
+
+	// Walk all functions to find locals.
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok {
+			fn := ""
+			if fd.Name != nil {
+				fn = fd.Name.Name
+			}
+			c := 0
+			processBlock(fn, fd.Body, nil, &c)
+		}
+	}
+
+	if len(locals) == 0 {
+		return false
+	}
+
+	// 1) Create top-level copies with new names; 2) remember which specs to remove.
+	toRemove := map[*ast.TypeSpec]bool{}
+	for _, ld := range locals {
+		// Deep-clone the underlying type expression to avoid sharing AST nodes
+		// between the original local spec and the new top-level spec.
+		clonedType := cloneExpr(ld.spec.Type)
+
+		newTS := &ast.TypeSpec{
+			Name: ast.NewIdent(ld.newName),
+			Type: clonedType,
+		}
+		newGD := &ast.GenDecl{Tok: token.TYPE, Specs: []ast.Spec{newTS}}
+		file.Decls = append(file.Decls, newGD)
+		toRemove[ld.spec] = true
+		changed = true
+	}
+
+	// 2) Rewrite references: any Ident that resolves to the local obj -> newName.
+	ast.Inspect(file, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if !ok || id == nil {
+			return true
+		}
+		if obj, ok := info.Defs[id].(*types.TypeName); ok && obj != nil {
+			if ld, ok2 := localByObj[obj]; ok2 {
+				id.Name = ld.newName
+			}
+		}
+		if obj, ok := info.Uses[id].(*types.TypeName); ok && obj != nil {
+			if ld, ok2 := localByObj[obj]; ok2 {
+				id.Name = ld.newName
+			}
+		}
+		return true
+	})
+
+	// 3) Remove the original local type specs (and prune empty DeclStmts) per block.
+	doneBlk := map[*ast.BlockStmt]bool{}
+	for _, ld := range locals {
+		if doneBlk[ld.block] {
+			continue
+		}
+		doneBlk[ld.block] = true
+		var newList []ast.Stmt
+		for _, st := range ld.block.List {
+			ds, ok := st.(*ast.DeclStmt)
+			if !ok {
+				newList = append(newList, st)
+				continue
+			}
+			gd, ok := ds.Decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				newList = append(newList, st)
+				continue
+			}
+			// Filter out hoisted specs in this GenDecl.
+			var keep []ast.Spec
+			for _, sp := range gd.Specs {
+				if ts, ok := sp.(*ast.TypeSpec); ok && toRemove[ts] {
+					continue
+				}
+				keep = append(keep, sp)
+			}
+			if len(keep) == 0 {
+				// Drop the whole DeclStmt.
+				continue
+			}
+			if len(keep) == len(gd.Specs) {
+				// Unchanged.
+				newList = append(newList, st)
+				continue
+			}
+			ng := *gd
+			ng.Specs = keep
+			newList = append(newList, &ast.DeclStmt{Decl: &ng})
+		}
+		ld.block.List = newList
+	}
+
+	return changed
 }
 
 // ---- helpers ----
@@ -283,7 +642,6 @@ func appendDecl(file *ast.File, d ast.Decl) { file.Decls = append(file.Decls, d)
 
 // Improved: supports X, *X, X[T], *X[T], X[T,U], *X[T,U], with extra parens tolerated.
 func baseIdentOfReceiver(recvType ast.Expr) (string, bool) {
-	// Strip pointer layers
 	t := recvType
 	for {
 		if se, ok := t.(*ast.StarExpr); ok {
@@ -320,59 +678,6 @@ func flattenFieldListIdents(fl *ast.FieldList) []string {
 		}
 	}
 	return out
-}
-
-func argsKey(args []ast.Expr) string {
-	var b strings.Builder
-	for i, a := range args {
-		if i > 0 {
-			b.WriteString(",")
-		}
-		b.WriteString(typeExprToStableName(a))
-	}
-	return b.String()
-}
-
-func makeMonoName(base string, args []ast.Expr) string {
-	var parts []string
-	for i, a := range args {
-		parts = append(parts, fmt.Sprintf("G%d%s", i+1, typeExprToStableName(a)))
-	}
-	return base + strings.Join(parts, "")
-}
-
-func typeExprToStableName(e ast.Expr) string {
-	switch t := e.(type) {
-	case *ast.Ident:
-		return cleanIdent(t.Name)
-	case *ast.SelectorExpr:
-		return typeExprToStableName(t.X) + "_" + cleanIdent(t.Sel.Name)
-	case *ast.StarExpr:
-		return "Ptr" + typeExprToStableName(t.X)
-	case *ast.ArrayType:
-		if t.Len == nil {
-			return "Slice" + typeExprToStableName(t.Elt)
-		}
-		return "Arr" + typeExprToStableName(t.Elt)
-	case *ast.MapType:
-		return "Map" + typeExprToStableName(t.Key) + "To" + typeExprToStableName(t.Value)
-	case *ast.ChanType:
-		return "Chan" + typeExprToStableName(t.Value)
-	case *ast.IndexListExpr:
-		return typeExprToStableName(t.X) + "Of" + argsKey(t.Indices)
-	case *ast.IndexExpr:
-		return typeExprToStableName(t.X) + "Of" + typeExprToStableName(t.Index)
-	case *ast.FuncType:
-		return "Func"
-	case *ast.StructType:
-		return "Struct"
-	case *ast.InterfaceType:
-		return "Iface"
-	default:
-		var buf bytes.Buffer
-		_ = printer.Fprint(&buf, token.NewFileSet(), e)
-		return cleanIdent(buf.String())
-	}
 }
 
 func cleanIdent(s string) string {
@@ -422,7 +727,6 @@ func nodeToSnippet(prefix string, n ast.Node, suffix string) string {
 }
 
 func cloneTypeDecl(ts *ast.TypeSpec, newName string, subst map[string]ast.Expr) ast.Decl {
-	// print original spec and reparse to get a deep copy
 	var buf bytes.Buffer
 	_ = printer.Fprint(&buf, token.NewFileSet(), ts)
 	src := "package p; type " + buf.String()
@@ -434,20 +738,15 @@ func cloneTypeDecl(ts *ast.TypeSpec, newName string, subst map[string]ast.Expr) 
 	gd := f.Decls[0].(*ast.GenDecl)
 	cp := gd.Specs[0].(*ast.TypeSpec)
 
-	// Substitute type params throughout
 	applySubstToNode(cp, subst)
-
-	// Drop type params and rename
 	cp.TypeParams = nil
 	cp.Name = ast.NewIdent(newName)
 
-	// Wrap back into a GenDecl
 	out := &ast.GenDecl{Tok: token.TYPE, Specs: []ast.Spec{cp}}
 	return out
 }
 
 func cloneMethodForConcrete(fd *ast.FuncDecl, baseName, concreteName string, subst map[string]ast.Expr) *ast.FuncDecl {
-	// clone decl
 	var buf bytes.Buffer
 	_ = printer.Fprint(&buf, token.NewFileSet(), fd)
 	src := "package p; " + buf.String()
@@ -458,7 +757,6 @@ func cloneMethodForConcrete(fd *ast.FuncDecl, baseName, concreteName string, sub
 	}
 	clone := f.Decls[0].(*ast.FuncDecl)
 
-	// fix receiver type to concrete name (preserve pointer/non-pointer as in original)
 	if clone.Recv == nil || len(clone.Recv.List) != 1 {
 		panic("unexpected receiver shape")
 	}
@@ -475,14 +773,12 @@ func cloneMethodForConcrete(fd *ast.FuncDecl, baseName, concreteName string, sub
 	}
 	recv.Type = newBase
 
-	// Substitute inside method body/signature
 	applySubstToNode(clone, subst)
 
 	return clone
 }
 
 func cloneFuncForConcrete(fd *ast.FuncDecl, newName string, subst map[string]ast.Expr) *ast.FuncDecl {
-	// clone
 	var buf bytes.Buffer
 	_ = printer.Fprint(&buf, token.NewFileSet(), fd)
 	src := "package p; " + buf.String()
@@ -493,28 +789,17 @@ func cloneFuncForConcrete(fd *ast.FuncDecl, newName string, subst map[string]ast
 	}
 	clone := f.Decls[0].(*ast.FuncDecl)
 
-	// drop type params and rename
 	if clone.Type != nil {
 		clone.Type.TypeParams = nil
 	}
 	clone.Name = ast.NewIdent(newName)
 
-	// Substitute throughout
 	applySubstToNode(clone, subst)
 
 	return clone
 }
 
-// applySubstToNode replaces identifiers that match any key in subst with the
-// corresponding concrete type expression in common *type positions*.
-//
-// Besides fields/specs/type specs and composite-literal types, this also
-// handles:
-//   - builtin `make`/`new`: first argument is a type expression
-//   - type conversions: the callee expression itself is a type (e.g. T(x))
-//
-// In all these spots we run `substInExpr` to swap type params (e.g., K,V,H)
-// with their concrete type expressions.
+// applySubstToNode: replace type params (by name) with concrete type exprs in common *type positions*.
 func applySubstToNode(n ast.Node, subst map[string]ast.Expr) {
 	ast.Inspect(n, func(nn ast.Node) bool {
 		switch x := nn.(type) {
@@ -531,20 +816,16 @@ func applySubstToNode(n ast.Node, subst map[string]ast.Expr) {
 				x.Type = substInExpr(x.Type, subst)
 			}
 		case *ast.CompositeLit:
-			// e.g. &HashTable[K,H,V]{ ... }
 			if x.Type != nil {
 				x.Type = substInExpr(x.Type, subst)
 			}
 		case *ast.CallExpr:
-			// Handle type conversions: Foo[T](v) or T(v)
-			// (when Fun denotes a type expression)
+			// Handle type conversions and builtins that take types.
 			x.Fun = substInExpr(x.Fun, subst)
-
-			// Handle builtins that take a type as the first arg.
 			if id, ok := x.Fun.(*ast.Ident); ok {
 				if id.Name == "make" || id.Name == "new" {
 					if len(x.Args) > 0 {
-						x.Args[0] = substInExpr(x.Args[0], subst) // e.g. make([]hashTableEntry[K,V], n)
+						x.Args[0] = substInExpr(x.Args[0], subst)
 					}
 				}
 			}
@@ -560,6 +841,9 @@ func substInExpr(e ast.Expr, subst map[string]ast.Expr) ast.Expr {
 			return cloneExpr(repl)
 		}
 		return e
+	case *ast.ParenExpr:
+		// *** FIX: recurse into parenthesized type expressions (e.g., (*H)(x)) ***
+		return &ast.ParenExpr{X: substInExpr(t.X, subst)}
 	case *ast.StarExpr:
 		return &ast.StarExpr{X: substInExpr(t.X, subst)}
 	case *ast.ArrayType:
@@ -638,13 +922,10 @@ func substInFuncType(ft *ast.FuncType, subst map[string]ast.Expr) *ast.FuncType 
 	}
 }
 
-// rewriteInstantiations replaces:
-//   - explicit Foo[Args...] nodes (ident or selector base) with the concrete identifier
-//   - calls with inferred args: PrintSlice(x) -> PrintSliceG1int(x)
+// rewriteInstantiations replaces explicit Foo[Args...] and generic calls with concrete identifiers.
 func rewriteInstantiations(file *ast.File, created map[instKey]string, callKeys map[*ast.CallExpr]instKey) bool {
 	changed := false
 
-	// Parent stack for ast.Inspect (only needed for replacing Index{,List}Expr)
 	var parents []ast.Node
 	replaceInParent := func(parent ast.Node, old ast.Expr, newName string) bool {
 		newIdent := ast.NewIdent(newName)
@@ -663,7 +944,6 @@ func rewriteInstantiations(file *ast.File, created map[instKey]string, callKeys 
 
 			switch ix := n.(type) {
 			case *ast.IndexListExpr:
-				// Foo[...], or pkg.Foo[...]
 				var baseName string
 				switch b := ix.X.(type) {
 				case *ast.Ident:
@@ -682,7 +962,6 @@ func rewriteInstantiations(file *ast.File, created map[instKey]string, callKeys 
 				}
 
 			case *ast.IndexExpr:
-				// Foo[T], or pkg.Foo[T]
 				var baseName string
 				switch b := ix.X.(type) {
 				case *ast.Ident:
@@ -702,7 +981,6 @@ func rewriteInstantiations(file *ast.File, created map[instKey]string, callKeys 
 			}
 		}
 
-		// Also handle callsites with inferred args directly on the node.
 		if call, ok := n.(*ast.CallExpr); ok {
 			if id, ok2 := call.Fun.(*ast.Ident); ok2 {
 				if k, ok3 := callKeys[call]; ok3 {
@@ -721,11 +999,8 @@ func rewriteInstantiations(file *ast.File, created map[instKey]string, callKeys 
 	return changed
 }
 
-// setChildExprInParent swaps child expression 'old' with 'newE' inside 'parent'.
-// Only expression-typed children are considered (no stmt fields).
 func setChildExprInParent(parent ast.Node, old, newE ast.Expr) bool {
 	switch p := parent.(type) {
-	// ---- statements carrying expressions (expr-only parts) ----
 	case *ast.ExprStmt:
 		if p.X == old {
 			p.X = newE
@@ -791,7 +1066,6 @@ func setChildExprInParent(parent ast.Node, old, newE ast.Expr) bool {
 			}
 		}
 
-	// ---- expressions with expr children ----
 	case *ast.CallExpr:
 		if p.Fun == old {
 			p.Fun = newE
@@ -884,8 +1158,6 @@ func setChildExprInParent(parent ast.Node, old, newE ast.Expr) bool {
 				return true
 			}
 		}
-
-	// ---- type positions (types are ast.Expr) ----
 	case *ast.TypeSpec:
 		if p.Type == old {
 			p.Type = newE
@@ -931,12 +1203,11 @@ func setChildExprInParent(parent ast.Node, old, newE ast.Expr) bool {
 }
 
 // Convert a types.Type into an ast.Expr by printing the type and parsing it back.
-// Types from the same package as 'file' are left unqualified (X[T] not main.X[T]).
 func typeToExprWithFile(file *ast.File, t types.Type) ast.Expr {
 	pkgName := file.Name.Name
 	src := types.TypeString(t, func(p *types.Package) string {
 		if p == nil || p.Name() == pkgName {
-			return "" // no qualifier for same package
+			return ""
 		}
 		return p.Name()
 	})
@@ -947,8 +1218,6 @@ func typeToExprWithFile(file *ast.File, t types.Type) ast.Expr {
 	return e
 }
 
-// getFuncDecl returns the *ast.FuncDecl by name, preferring the genFuncs index but
-// falling back to a linear scan of the file if necessary.
 func getFuncDecl(file *ast.File, genFuncs map[string]*ast.FuncDecl, name string) *ast.FuncDecl {
 	if fd, ok := genFuncs[name]; ok && fd != nil {
 		return fd
@@ -963,9 +1232,6 @@ func getFuncDecl(file *ast.File, genFuncs map[string]*ast.FuncDecl, name string)
 
 // --------- hoistability (types-based) ---------
 
-// isHoistableType returns true if t mentions no block-local named types.
-// Predeclareds and package-level named types are OK; everything else must
-// recursively be OK as well.
 func isHoistableType(t types.Type) bool {
 	seen := map[types.Type]bool{}
 	var rec func(types.Type) bool
@@ -1033,18 +1299,14 @@ func isHoistableType(t types.Type) bool {
 			return true
 		case *types.Named:
 			obj := x.Obj()
-			// Predeclareds are *Basic, but be defensive:
 			if obj == nil || obj.Pkg() == nil {
 				return true
 			}
-			// OK iff declared in package scope of its package.
 			if obj.Parent() != obj.Pkg().Scope() {
 				return false
 			}
-			// Also check underlying just in case.
 			return rec(x.Underlying())
 		case *types.TypeParam:
-			// Type params themselves are not hoistable as concrete args.
 			return false
 		default:
 			return rec(x.Underlying())
@@ -1053,8 +1315,6 @@ func isHoistableType(t types.Type) bool {
 	return rec(t)
 }
 
-// predeclTypeByName returns a predeclared type by name (e.g., "int", "string", "any", "error").
-// Returns nil if the name isn't a predeclared/builtin type.
 func predeclTypeByName(name string) types.Type {
 	switch name {
 	case "bool":
@@ -1096,7 +1356,6 @@ func predeclTypeByName(name string) types.Type {
 	case "complex128":
 		return types.Typ[types.Complex128]
 	case "any":
-		// alias to interface{}
 		if tn, ok := types.Universe.Lookup("any").(*types.TypeName); ok {
 			return tn.Type()
 		}
@@ -1109,4 +1368,119 @@ func predeclTypeByName(name string) types.Type {
 	default:
 		return nil
 	}
+}
+
+// typeExprMentionsTypeParams returns true if the type expression references any type parameters.
+func typeExprMentionsTypeParams(expr ast.Expr, info *types.Info) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found || n == nil {
+			return false
+		}
+		id, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if obj, ok := info.Uses[id].(*types.TypeName); ok && obj != nil {
+			if _, isTP := obj.Type().(*types.TypeParam); isTP {
+				found = true
+				return false
+			}
+		}
+		if obj, ok := info.Defs[id].(*types.TypeName); ok && obj != nil {
+			if _, isTP := obj.Type().(*types.TypeParam); isTP {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// Ensures a valid Go identifier: letters/digits/underscore only; if it
+// doesn't start with a letter or '_', prefixes 'X'.
+func safeIdent(s string) string {
+	// First apply the existing cleanup rules you already rely on.
+	s = cleanIdent(s)
+
+	// Enforce identifier charset.
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' {
+			out = append(out, r)
+		} else {
+			out = append(out, '_')
+		}
+	}
+	if len(out) == 0 {
+		return "X"
+	}
+	// Must start with letter or underscore.
+	h := out[0]
+	if !((h >= 'a' && h <= 'z') || (h >= 'A' && h <= 'Z') || h == '_') {
+		out = append([]rune{'X'}, out...)
+	}
+	return string(out)
+}
+
+// Build a stable key for a list of type args WITHOUT commas (use 'C' as a separator).
+func argsKey(args []ast.Expr) string {
+	parts := make([]string, 0, len(args))
+	for _, a := range args {
+		parts = append(parts, typeExprToStableName(a))
+	}
+	// 'C' is already used in your cleanIdent() mapping; it’s safe and comma-free.
+	return strings.Join(parts, "C")
+}
+
+// Convert a type expression to a stable, comma-free, identifier-safe name.
+func typeExprToStableName(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return safeIdent(t.Name)
+	case *ast.SelectorExpr:
+		// pkg.Type -> <pkg>_<Type>
+		return safeIdent(typeExprToStableName(t.X) + "_" + t.Sel.Name)
+	case *ast.StarExpr:
+		return safeIdent("Ptr" + typeExprToStableName(t.X))
+	case *ast.ArrayType:
+		if t.Len == nil {
+			return safeIdent("Slice" + typeExprToStableName(t.Elt))
+		}
+		return safeIdent("Arr" + typeExprToStableName(t.Elt))
+	case *ast.MapType:
+		return safeIdent("Map" + typeExprToStableName(t.Key) + "To" + typeExprToStableName(t.Value))
+	case *ast.ChanType:
+		return safeIdent("Chan" + typeExprToStableName(t.Value))
+	case *ast.IndexListExpr:
+		// E.g. Foo[T, U] -> FooOf<T_name>C<U_name> (no commas)
+		return safeIdent(typeExprToStableName(t.X) + "Of" + argsKey(t.Indices))
+	case *ast.IndexExpr:
+		// E.g. Foo[T] -> FooOf<T_name> (no commas)
+		return safeIdent(typeExprToStableName(t.X) + "Of" + typeExprToStableName(t.Index))
+	case *ast.FuncType:
+		return "Func"
+	case *ast.StructType:
+		return "Struct"
+	case *ast.InterfaceType:
+		return "Iface"
+	default:
+		// Fallback: print and sanitize.
+		var buf bytes.Buffer
+		_ = printer.Fprint(&buf, token.NewFileSet(), e)
+		return safeIdent(buf.String())
+	}
+}
+
+// Build the concrete symbol name: Base + G1<...>G2<...>..., then sanitize once more.
+func makeMonoName(base string, args []ast.Expr) string {
+	var parts []string
+	for i, a := range args {
+		parts = append(parts, fmt.Sprintf("G%d%s", i+1, typeExprToStableName(a)))
+	}
+	return safeIdent(base + strings.Join(parts, ""))
 }
