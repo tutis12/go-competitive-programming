@@ -38,17 +38,27 @@ func NewSegmentTree[
 	if size <= 0 {
 		panic("size must be positive")
 	}
+
 	log2n := utils.LogCeil(uint64(size))
 	n := 1 << log2n
 	arr := make([]segmentTreeNode[value, update], 2*n)
 	for i := range size {
-		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{init(i), zeroUpdate}
+		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{
+			value:  init(i),
+			update: zeroUpdate,
+		}
 	}
 	for i := size; i < n; i++ {
-		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{zeroValue, zeroUpdate}
+		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{
+			value:  zeroValue,
+			update: zeroUpdate,
+		}
 	}
 	for i := n - 1; i > 0; i-- {
-		*utils.Get(arr, i) = segmentTreeNode[value, update]{(utils.Get(arr, 2*i).value).Merge(utils.Get(arr, 2*i+1).value), zeroUpdate}
+		*utils.Get(arr, i) = segmentTreeNode[value, update]{
+			value:  (utils.Get(arr, 2*i).value).Merge(utils.Get(arr, 2*i+1).value),
+			update: zeroUpdate,
+		}
 	}
 	return &SegmentTree[value, update]{
 		log2n:      log2n,
@@ -71,7 +81,7 @@ n = 16 log2n = 4
 	[0 ... val(i) ... size-1] [size ... zero ... n]
 */
 
-func (st SegmentTree[value, update]) SetValue(
+func (st *SegmentTree[value, update]) SetValue(
 	i int,
 	val value,
 ) {
@@ -84,7 +94,7 @@ func (st SegmentTree[value, update]) SetValue(
 	st.rebuild(i)
 }
 
-func (st SegmentTree[value, update]) Update(
+func (st *SegmentTree[value, update]) Update(
 	l, r int,
 	upd update,
 ) {
@@ -117,7 +127,7 @@ func (st SegmentTree[value, update]) Update(
 	st.rebuild(r)
 }
 
-func (st SegmentTree[value, update]) Get(
+func (st *SegmentTree[value, update]) Get(
 	l, r int,
 ) value {
 	l = max(l, 0)
@@ -150,7 +160,7 @@ func (st SegmentTree[value, update]) Get(
 	return summedL.Merge(summedR)
 }
 
-func (st SegmentTree[value, update]) LongestRangeWherePredicate(
+func (st *SegmentTree[value, update]) LongestRangeWherePredicate(
 	rMax int,
 	predicate func(value) bool,
 ) (int, bool) {
@@ -165,7 +175,7 @@ func (st SegmentTree[value, update]) LongestRangeWherePredicate(
 	}
 	summedValue := st.zeroValue
 	for i > 0 {
-		arrVal := utils.Get(st.arr, i)
+		arrVal := *utils.Get(st.arr, i)
 		(arrVal.update).ApplyUpdate(&arrVal.value)
 		val := arrVal.value.Merge(summedValue)
 		if predicate(val) {
@@ -185,7 +195,7 @@ func (st SegmentTree[value, update]) LongestRangeWherePredicate(
 
 	upd := utils.Get(st.arr, i).update
 	for i < st.n {
-		val := utils.Get(st.arr, 2*i+1)
+		val := *utils.Get(st.arr, 2*i+1)
 		(upd).Push(&val.update)
 		(upd).ApplyUpdate(&val.value)
 		combined := val.value.Merge(summedValue)
@@ -200,7 +210,7 @@ func (st SegmentTree[value, update]) LongestRangeWherePredicate(
 	return i - st.n + 1, true
 }
 
-func (st SegmentTree[value, update]) pushUpdates(
+func (st *SegmentTree[value, update]) pushUpdates(
 	i int,
 ) {
 	i += st.n
@@ -218,15 +228,15 @@ func (st SegmentTree[value, update]) pushUpdates(
 	utils.Get(st.arr, i).update = st.zeroUpdate
 }
 
-func (st SegmentTree[value, update]) rebuild(
+func (st *SegmentTree[value, update]) rebuild(
 	i int,
 ) {
 	i += st.n
 	i /= 2
 	for i != 0 {
-		left := utils.Get(st.arr, 2*i)
+		left := *utils.Get(st.arr, 2*i)
 		(left.update).ApplyUpdate(&left.value)
-		right := utils.Get(st.arr, 2*i+1)
+		right := *utils.Get(st.arr, 2*i+1)
 		(right.update).ApplyUpdate(&right.value)
 		utils.Get(st.arr, i).value = left.value.Merge(right.value)
 		i = i / 2

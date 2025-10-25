@@ -12,10 +12,6 @@ import (
 )
 
 func PruneUnused(src []byte) []byte {
-	// NOTE: Requires these imports in your file:
-	//   "bytes", "go/ast", "go/format", "go/importer", "go/parser",
-	//   "go/printer", "go/token", "go/types", "strings"
-
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "merged.go", src, parser.ParseComments|parser.AllErrors)
 	if err != nil {
@@ -32,17 +28,17 @@ func PruneUnused(src []byte) []byte {
 	conf := &types.Config{Importer: importer.Default()}
 	_, err = conf.Check(file.Name.Name, fset, []*ast.File{file}, info)
 	if err != nil {
-		// If it doesn't type-check (transient while you iterate), best effort: return as-is.
+		// Best-effort: if it doesn't type-check, leave the source unchanged.
 		return src
 	}
 
 	// ---------- Index top-level declarations ----------
 	typeDeclByObj := map[*types.TypeName]*ast.TypeSpec{}
 	funcDeclByObj := map[*types.Func]*ast.FuncDecl{}
-	methodsByName := map[string][]*ast.FuncDecl{} // for fallback printing order
+	methodsByName := map[string][]*ast.FuncDecl{} // not strictly needed, but harmless
 	varDeclSpecs := map[*ast.ValueSpec]token.Token{}
 	valueNameToSpec := map[string]*ast.ValueSpec{}
-	importDecls := []*ast.GenDecl{}
+	importDecls := []*ast.GenDecl{} // kept as-is (formatter/compile will prune unused)
 	var mainFunc *ast.FuncDecl
 
 	for _, d := range file.Decls {
@@ -168,11 +164,7 @@ func PruneUnused(src []byte) []byte {
 			pushFunc(fn)
 		}
 	}
-	// Root: top-level "var X = someFunc" or "const" init used as func idents
-	for obj, decl := range funcDeclByObj {
-		_ = decl
-		_ = obj
-	}
+	// Root: top-level "var X = someFunc" or const init used as func ident
 	for _, d := range file.Decls {
 		gd, ok := d.(*ast.GenDecl)
 		if !ok || (gd.Tok != token.VAR && gd.Tok != token.CONST) {
@@ -181,11 +173,24 @@ func PruneUnused(src []byte) []byte {
 		for _, sp := range gd.Specs {
 			vs := sp.(*ast.ValueSpec)
 			for _, val := range vs.Values {
-				if id, ok := val.(*ast.Ident); ok {
+				switch id := val.(type) {
+				case *ast.Ident:
 					if o := info.Uses[id]; o != nil {
 						if fn, ok := o.(*types.Func); ok {
 							pushFunc(fn)
-							// also keep the variable being assigned (name spec)
+							reachValue[vs] = true
+						}
+					}
+				case *ast.SelectorExpr:
+					// package-qualified function or method value
+					if sel, ok := info.Selections[id]; ok {
+						if f, ok := sel.Obj().(*types.Func); ok {
+							pushFunc(f)
+							reachValue[vs] = true
+						}
+					} else if o := info.Uses[id.Sel]; o != nil {
+						if f, ok := o.(*types.Func); ok {
+							pushFunc(f)
 							reachValue[vs] = true
 						}
 					}
@@ -195,6 +200,53 @@ func PruneUnused(src []byte) []byte {
 	}
 
 	// ---------- BFS over reachable functions/methods ----------
+	markFuncValueInExpr := func(e ast.Expr) {
+		switch v := e.(type) {
+		case *ast.Ident:
+			if obj := info.Uses[v]; obj != nil {
+				if fn, ok := obj.(*types.Func); ok {
+					pushFunc(fn)
+				}
+			}
+		case *ast.SelectorExpr:
+			// Could be a method value t.M or a pkg-qualified func pkg.F
+			if sel, ok := info.Selections[v]; ok {
+				if f, ok := sel.Obj().(*types.Func); ok {
+					pushFunc(f)
+				}
+			} else if obj := info.Uses[v.Sel]; obj != nil {
+				if f, ok := obj.(*types.Func); ok {
+					pushFunc(f)
+				}
+			}
+		case *ast.FuncLit:
+			// Not a top-level declaration; nothing to retain here.
+		default:
+			// Recurse into subexpressions to catch nested idents/selectors.
+			ast.Inspect(v, func(n ast.Node) bool {
+				switch nn := n.(type) {
+				case *ast.Ident:
+					if obj := info.Uses[nn]; obj != nil {
+						if fn, ok := obj.(*types.Func); ok {
+							pushFunc(fn)
+						}
+					}
+				case *ast.SelectorExpr:
+					if sel, ok := info.Selections[nn]; ok {
+						if f, ok := sel.Obj().(*types.Func); ok {
+							pushFunc(f)
+						}
+					} else if obj := info.Uses[nn.Sel]; obj != nil {
+						if f, ok := obj.(*types.Func); ok {
+							pushFunc(f)
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+
 	visitFuncBody := func(fd *ast.FuncDecl) {
 		if fd == nil || fd.Body == nil {
 			return
@@ -203,6 +255,7 @@ func PruneUnused(src []byte) []byte {
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.CallExpr:
+				// Mark the callee (direct call)
 				switch cal := x.Fun.(type) {
 				case *ast.Ident:
 					if obj := info.Uses[cal]; obj != nil {
@@ -211,7 +264,7 @@ func PruneUnused(src []byte) []byte {
 						}
 					}
 				case *ast.SelectorExpr:
-					// method value or method expr
+					// method value or method expr or pkg.fn
 					if sel, ok := info.Selections[cal]; ok {
 						if f, ok := sel.Obj().(*types.Func); ok {
 							pushFunc(f)
@@ -225,9 +278,10 @@ func PruneUnused(src []byte) []byte {
 						}
 					}
 				}
-				// harvest type args in builtins/conversions
+				// Also scan call arguments for function values (THIS FIX KEEPS predicate)
 				for _, a := range x.Args {
 					harvestTypes(a)
+					markFuncValueInExpr(a)
 				}
 			case *ast.CompositeLit:
 				harvestTypes(x.Type)
@@ -241,9 +295,28 @@ func PruneUnused(src []byte) []byte {
 						reachValue[vs] = true
 					}
 				}
+				// Also, if a function value is assigned, keep it.
+				for _, v := range x.Values {
+					markFuncValueInExpr(v)
+				}
 			case *ast.Ident:
+				// See if this ident refers to a global var/const; mark it.
 				if vs, ok := valueNameToSpec[x.Name]; ok {
 					reachValue[vs] = true
+				}
+				// And if it refers to a function used as a value anywhere, keep it.
+				if obj := info.Uses[x]; obj != nil {
+					if fn, ok := obj.(*types.Func); ok {
+						pushFunc(fn)
+					}
+				}
+			case *ast.AssignStmt:
+				for _, rhs := range x.Rhs {
+					markFuncValueInExpr(rhs)
+				}
+			case *ast.ReturnStmt:
+				for _, res := range x.Results {
+					markFuncValueInExpr(res)
 				}
 			case *ast.UnaryExpr:
 				if cl, ok := x.X.(*ast.CompositeLit); ok {
@@ -387,7 +460,7 @@ func PruneUnused(src []byte) []byte {
 					kept = append(kept, &nd)
 				}
 			case token.IMPORT:
-				// keep imports for now; go/format + go/types later can trim with 'sanitizeCode'
+				// keep imports; formatter/type-checker can trim later if you run another pass
 				kept = append(kept, d)
 			default:
 				kept = append(kept, d)
@@ -398,7 +471,7 @@ func PruneUnused(src []byte) []byte {
 	}
 	file.Decls = kept
 
-	// Drop all comments (optional; matches your previous pass)
+	// Drop all comments (optional; matches the original behavior)
 	file.Comments = nil
 	for _, d := range file.Decls {
 		if gd, ok := d.(*ast.GenDecl); ok {
@@ -409,7 +482,7 @@ func PruneUnused(src []byte) []byte {
 		}
 	}
 
-	// ---------- Stable-ish emission: keep package/imports + main first ----------
+	// ---------- Emit ----------
 	var out bytes.Buffer
 	_ = printer.Fprint(&out, fset, file)
 	pretty, err := format.Source(out.Bytes())
