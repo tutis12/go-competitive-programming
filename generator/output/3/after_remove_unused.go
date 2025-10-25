@@ -74,13 +74,6 @@ func SolveA(
 	}
 }
 
-var aiGlobal int
-var costGlobal int
-
-func predicate(x stValue) bool {
-	return x.minA*costGlobal >= aiGlobal
-}
-
 func solveATest(
 	stdin *Reader,
 	stdout *Writer,
@@ -107,10 +100,10 @@ func solveATest(
 	for i := range n {
 		ai := a[i]
 		dp[i] = i + 1
-		aiGlobal = ai
 		for cost := 1; cost <= 3; cost++ {
-			costGlobal = cost
-			l, _ := st.LongestRangeWherePredicate(i, predicate)
+			l, _ := st.LongestRangeWherePredicate(i, func(x stValue) bool {
+				return x.minA*cost >= ai
+			})
 			var total int
 			if l == 0 {
 				total = cost
@@ -446,8 +439,9 @@ func (st *SegmentTreeG1stValueG2lazy,
 	for i >
 		0 {
 		arrVal :=
-			GetG1segmentTreeNodeOfstValueClazy(st.arr, i)
-		(arrVal.update).ApplyUpdate(&arrVal.value)
+			*GetG1segmentTreeNodeOfstValueClazy(st.arr, i)
+		(arrVal.update).ApplyUpdate(&arrVal.
+			value)
 		val := arrVal.
 			value.Merge(summedValue)
 		if predicate(val) {
@@ -470,27 +464,26 @@ func (st *SegmentTreeG1stValueG2lazy,
 	upd := GetG1segmentTreeNodeOfstValueClazy(st.
 		arr, i).update
 	for i <
-		st.
-			n {
-		val := GetG1segmentTreeNodeOfstValueClazy(st.
+
+		st.n {
+		val := *GetG1segmentTreeNodeOfstValueClazy(st.
 			arr,
 
 			2*
 				i+
 				1)
-
 		(upd).
 			Push(&val.
 				update,
 			)
 		(upd).ApplyUpdate(&val.value)
 		combined := val.
-			value.Merge(
-			summedValue)
-		if predicate(combined) {
+			value.Merge(summedValue)
+		if predicate(
+			combined,
+		) {
 			summedValue = combined
-			i =
-				2 * i
+			i = 2 * i
 		} else {
 
 			upd = val.update
@@ -533,17 +526,18 @@ func (st *SegmentTreeG1stValueG2lazy,
 	i += st.n
 	i /= 2
 	for i != 0 {
-		left := GetG1segmentTreeNodeOfstValueClazy(st.arr,
+		left := *GetG1segmentTreeNodeOfstValueClazy(st.arr,
+
 			2*
 				i)
-		(left.update).ApplyUpdate(&left.value)
-		right := GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*i+1)
-		(right.update).ApplyUpdate(&right.value)
-		GetG1segmentTreeNodeOfstValueClazy(st.arr, i).
-			value = left.value.
+		(left.update).ApplyUpdate(&left.
+			value)
+		right := *GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*i+1)
+		(right.update).ApplyUpdate(&right.
+			value)
+		GetG1segmentTreeNodeOfstValueClazy(st.arr, i).value = left.value.
 			Merge(right.value)
-		i =
-			i / 2
+		i = i / 2
 	}
 }
 
