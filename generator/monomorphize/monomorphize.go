@@ -10,6 +10,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"main/debug"
 	"sort"
 	"strings"
 )
@@ -86,7 +87,14 @@ func Monomorphize(src []byte) []byte {
 			// Fail fast on any type error to preserve the "always compiles" invariant.
 			Error: func(err error) { panic(err) },
 		}
-		if _, err := conf.Check(file.Name.Name, fset, []*ast.File{file}, info); err != nil {
+
+		if err := debug.Try(func() {
+			if _, err := conf.Check(file.Name.Name, fset, []*ast.File{file}, info); err != nil {
+				debugTypecheckFailure(fset, file, err)
+				panic(err)
+			}
+		}); err != nil {
+			debugTypecheckFailure(fset, file, err)
 			panic(err)
 		}
 
@@ -1483,4 +1491,72 @@ func makeMonoName(base string, args []ast.Expr) string {
 		parts = append(parts, fmt.Sprintf("G%d%s", i+1, typeExprToStableName(a)))
 	}
 	return safeIdent(base + strings.Join(parts, ""))
+}
+
+// debugTypecheckFailure prints a highlighted snippet for the first position
+// contained in a go/types error, falling back to parsing the error string.
+func debugTypecheckFailure(fset *token.FileSet, file *ast.File, err error) {
+	fmt.Printf("\n--- types.Check failed: %v ---\n", err)
+
+	// Produce best-effort source from the AST.
+	var buf bytes.Buffer
+	if e := printer.Fprint(&buf, fset, file); e != nil {
+		fmt.Println("printer.Fprint also failed; dumping AST instead:")
+		var astBuf bytes.Buffer
+		_ = ast.Fprint(&astBuf, fset, file, nil)
+		fmt.Print(astBuf.String())
+		return
+	}
+	src := buf.Bytes()
+	lines := bytes.Split(src, []byte("\n"))
+
+	// Try to get line/col from concrete error types.
+	line, col := 0, 0
+
+	// Case 1: a single types.Error
+	if te, ok := err.(types.Error); ok {
+		pos := fset.Position(te.Pos)
+		line, col = pos.Line, pos.Column
+	}
+
+	// Case 2: sometimes the error message is like "file.go:line:col: msg"
+	if line == 0 || col == 0 {
+		if l2, c2 := parseLineCol(err.Error()); l2 > 0 && c2 > 0 {
+			line, col = l2, c2
+		}
+	}
+
+	// If we still don't have a position, just dump the whole source.
+	if line <= 0 || col <= 0 || line > len(lines) {
+		fmt.Println("--- could not determine position from error; dumping source ---")
+		fmt.Print(string(src))
+		fmt.Println()
+		return
+	}
+
+	from := line - 3
+	if from < 1 {
+		from = 1
+	}
+	to := line + 3
+	if to > len(lines) {
+		to = len(lines)
+	}
+	for i := from; i <= to; i++ {
+		prefix := "   "
+		if i == line {
+			prefix = ">>>"
+		}
+		fmt.Printf("%s %6d | %s\n", prefix, i, lines[i-1])
+		if i == line {
+			if col > len(lines[i-1]) {
+				col = len(lines[i-1])
+			}
+			if col < 1 {
+				col = 1
+			}
+			spaces := bytes.Repeat([]byte(" "), col-1)
+			fmt.Printf("            %s^\n", spaces)
+		}
+	}
 }
