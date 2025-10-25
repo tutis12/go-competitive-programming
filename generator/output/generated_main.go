@@ -131,11 +131,6 @@ func solveATest(
 	stdout.Int(dp.Get(n-1), '\n')
 }
 
-const (
-	maxOffset      = 8
-	checkHashFirst = false
-)
-
 func ExitOnPanic() {
 	err := recover()
 	if err == nil {
@@ -274,6 +269,11 @@ func (w *Writer) Int(value int, c byte) {
 	w.bytes(w.intBuffer[i+1:])
 }
 
+const (
+	maxOffset      = 8
+	checkHashFirst = false
+)
+
 func LogFloor(x uint64) int {
 	if x == 0 {
 		panic("Log2(0) is undefined")
@@ -314,8 +314,8 @@ func NewHashTableG1intG2intHashG3int(size int) *HashTableG1intG2intHashG3int {
 	log2Size :=
 		LogCeil(uint64(size*2 +
 			1))
-	return &HashTableG1intG2intHashG3int{entries1: make([]hashTableEntryG1intG2int, (1<<log2Size)+maxOffset), entries2: make([][]hashTableEntryG1intG2int, 1<<log2Size), log2Size: log2Size,
-		oddSalt1: rand.Uint64() | 1, oddSalt2: rand.Uint64() | 1, count: 0}
+	return &HashTableG1intG2intHashG3int{entries1: make([]hashTableEntryG1intG2int, (1<<log2Size)+maxOffset), entries2: make([][]hashTableEntryG1intG2int, 1<<log2Size), log2Size: log2Size, oddSalt1: rand.Uint64() | 1,
+		oddSalt2: rand.Uint64() | 1, count: 0}
 }
 
 type HashTableG1intG2intHashG3int struct {
@@ -325,7 +325,8 @@ type HashTableG1intG2intHashG3int struct {
 
 	oddSalt1 uint64
 	oddSalt2 uint64
-	count    int
+
+	count int
 }
 
 func (hm *HashTableG1intG2intHashG3int,
@@ -392,28 +393,26 @@ func (hm *HashTableG1intG2intHashG3int,
 	var zero int
 
 	for _, val := range arr {
-		if val.hash == 0 {
-
+		if val.hash ==
+			0 {
 			return zero, false
 		}
 		if (!checkHashFirst ||
-			val.hash ==
-				hash) && val.key ==
-			key {
-			return val.
-					value,
-
-				true
-		}
-	}
-	index2 := hm.index2(hash)
-	for _, val := range *GetG1SlicehashTableEntryOfintCint(hm.
-		entries2, int(index2)) {
-		if (!checkHashFirst ||
 			val.hash == hash) &&
-
 			val.key == key {
 			return val.value, true
+		}
+	}
+	index2 :=
+		hm.
+			index2(hash)
+	for _, val := range *GetG1SlicehashTableEntryOfintCint(hm.entries2, int(index2)) {
+		if (!checkHashFirst ||
+			val.hash == hash) &&
+			val.
+				key == key {
+			return val.
+				value, true
 		}
 	}
 	return zero, false
@@ -435,37 +434,38 @@ func (hm *HashTableG1intG2intHashG3int,
 		hash(key)
 	index1 :=
 		hm.index1(hash)
-	arr := GetArrG1hashTableEntryOfintCint(hm.entries1, int(index1))
+	arr := GetArrG1hashTableEntryOfintCint(hm.entries1,
+		int(index1),
+	)
 	for i := range maxOffset {
 		e := &arr[i]
-		if e.hash == 0 {
-			*e = hashTableEntryG1intG2int{hash: hash, key: key,
-
-				value: value}
+		if e.hash ==
+			0 {
+			*e = hashTableEntryG1intG2int{hash: hash, key: key, value: value}
 			hm.count++
+
 			return
-		} else if (!checkHashFirst ||
-			e.hash == hash) &&
-			e.key == key {
+		} else if (!checkHashFirst || e.hash == hash) && e.key == key {
 			e.value = value
 			return
 		}
 	}
 	index2 := hm.index2(hash)
-	entries := GetG1SlicehashTableEntryOfintCint(hm.entries2,
-		int(index2),
-	)
+	entries := GetG1SlicehashTableEntryOfintCint(hm.entries2, int(index2))
 	for i, val := range *entries {
-		if val.hash ==
-			hash &&
+		if val.hash == hash &&
 			val.key == key {
 			GetG1hashTableEntryOfintCint(*entries, i).value = value
 			return
 		}
 	}
+	*entries = append(*entries, hashTableEntryG1intG2int{hash: hash,
 
-	*entries = append(*entries, hashTableEntryG1intG2int{hash: hash, key: key,
-		value: value})
+		key: key,
+
+		value: value,
+	})
+
 	hm.
 		count++
 }
@@ -477,25 +477,25 @@ func (hm *HashTableG1intG2intHashG3int,
 		log2Size)+
 		maxOffset,
 	)
-	newEntries2 := make([][]hashTableEntryG1intG2int, 1<<hm.log2Size)
+	newEntries2 := make([][]hashTableEntryG1intG2int, 1<<
+		hm.log2Size)
 	add := func(e hashTableEntryG1intG2int) {
-		hash := hm.
-			hash(e.key)
+		hash := hm.hash(e.
+			key)
 		index1 := hm.index1(hash)
-		arr := GetArrG1hashTableEntryOfintCint(newEntries1,
-
-			int(index1))
+		arr :=
+			GetArrG1hashTableEntryOfintCint(newEntries1, int(
+				index1))
 		for j := range arr {
 			if arr[j].hash == 0 {
 				arr[j] = e
 				return
 			}
 		}
-		index2 :=
-			hm.index2(hash)
-		entries := GetG1SlicehashTableEntryOfintCint(newEntries2, int(index2))
-		*entries = append(
-			*entries, e)
+		index2 := hm.index2(hash)
+		entries := GetG1SlicehashTableEntryOfintCint(newEntries2,
+			int(index2))
+		*entries = append(*entries, e)
 	}
 	for _, e := range hm.entries1 {
 		if e.hash == 0 {
@@ -505,13 +505,14 @@ func (hm *HashTableG1intG2intHashG3int,
 	}
 	for _, bucket := range hm.entries2 {
 		for _, e := range bucket {
-
 			add(e)
 		}
 	}
+	hm.entries1 = newEntries1
+
 	hm.
-		entries1 = newEntries1
-	hm.entries2 = newEntries2
+		entries2 = newEntries2
+
 }
 func GetG1SlicehashTableEntryOfintCint(slice [][]hashTableEntryG1intG2int,
 
@@ -554,31 +555,33 @@ func NewSegmentTreeG1stValueG2lazy(init func(int) stValue,
 	zeroUpdate lazy,
 
 ) *SegmentTreeG1stValueG2lazy {
-	if size <=
-		0 {
+	if size <= 0 {
 		panic("size must be positive")
 	}
 	log2n := LogCeil(uint64(size))
-	n := 1 <<
-
-		log2n
+	n := 1 << log2n
 	arr := make([]segmentTreeNodeG1stValueG2lazy, 2*n)
 	for i := range size {
-		*GetG1segmentTreeNodeOfstValueClazy(arr,
-			n+i) = segmentTreeNodeG1stValueG2lazy{init(i), zeroUpdate}
+		*GetG1segmentTreeNodeOfstValueClazy(arr, n+i) = segmentTreeNodeG1stValueG2lazy{init(i), zeroUpdate}
 	}
-	for i := size; i < n; i++ {
-		*GetG1segmentTreeNodeOfstValueClazy(arr, n+i) = segmentTreeNodeG1stValueG2lazy{
-			zeroValue, zeroUpdate}
+	for i := size; i <
+		n; i++ {
+		*GetG1segmentTreeNodeOfstValueClazy(arr, n+i) = segmentTreeNodeG1stValueG2lazy{zeroValue,
+			zeroUpdate}
 	}
 	for i := n - 1; i > 0; i-- {
-		*GetG1segmentTreeNodeOfstValueClazy(arr, i) = segmentTreeNodeG1stValueG2lazy{(GetG1segmentTreeNodeOfstValueClazy(arr, 2*i).value).Merge(GetG1segmentTreeNodeOfstValueClazy(arr,
 
-			2*i+1).value), zeroUpdate}
+		*GetG1segmentTreeNodeOfstValueClazy(arr, i) = segmentTreeNodeG1stValueG2lazy{
+			(GetG1segmentTreeNodeOfstValueClazy(arr, 2*i).value).Merge(GetG1segmentTreeNodeOfstValueClazy(arr, 2*i+1).value),
+			zeroUpdate,
+		}
+
 	}
 	return &SegmentTreeG1stValueG2lazy{log2n: log2n,
+
 		n:   n,
-		arr: arr, zeroValue: zeroValue, zeroUpdate: zeroUpdate,
+		arr: arr, zeroValue: zeroValue,
+		zeroUpdate: zeroUpdate,
 	}
 }
 func GetG1segmentTreeNodeOfstValueClazy(slice []segmentTreeNodeG1stValueG2lazy,
@@ -614,9 +617,11 @@ func (st SegmentTreeG1stValueG2lazy,
 		panic("index out of bounds")
 	}
 	st.pushUpdates(i)
-	(*GetG1segmentTreeNodeOfstValueClazy(st.arr, i+st.n)).value = val
-	(*GetG1segmentTreeNodeOfstValueClazy(st.arr, i+st.n)).
-		update = st.zeroUpdate
+	(*GetG1segmentTreeNodeOfstValueClazy(st.
+		arr, i+st.n)).
+		value = val
+	(*GetG1segmentTreeNodeOfstValueClazy(st.arr, i+
+		st.n)).update = st.zeroUpdate
 	st.rebuild(i)
 }
 
@@ -631,43 +636,38 @@ func (st SegmentTreeG1stValueG2lazy,
 		return st.
 			zeroValue
 	}
-	st.pushUpdates(
-		l)
-	st.pushUpdates(
-		r)
-	summedL := st.zeroValue
-	summedR :=
+	st.pushUpdates(l)
+	st.
+		pushUpdates(r)
 
-		st.
-			zeroValue
-	l,
-		r = l+st.n, r+st.n
-	for l <= r {
-		if l%2 ==
-			1 {
-			(GetG1segmentTreeNodeOfstValueClazy(st.arr,
-				l).update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr, l).value)
-			summedL = summedL.Merge((*GetG1segmentTreeNodeOfstValueClazy(st.arr, l)).value)
-			l = l/2 +
-				1
+	summedL := st.zeroValue
+	summedR := st.zeroValue
+	l, r = l+st.n,
+		r+
+			st.n
+	for l <=
+		r {
+		if l%2 == 1 {
+			(GetG1segmentTreeNodeOfstValueClazy(st.arr, l).
+				update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.
+				arr, l).value)
+			summedL = summedL.
+				Merge((*GetG1segmentTreeNodeOfstValueClazy(st.arr, l)).value)
+			l = l/2 + 1
 		} else {
-			l = l /
-				2
+			l = l / 2
 		}
 		if r%2 == 0 {
-			(GetG1segmentTreeNodeOfstValueClazy(
-				st.arr, r).update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr, r).
-				value)
-			summedR = GetG1segmentTreeNodeOfstValueClazy(st.arr, r).value.
-				Merge(summedR)
-			r = r/2 -
-				1
+			(GetG1segmentTreeNodeOfstValueClazy(st.
+				arr, r).update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr, r).value)
+			summedR = GetG1segmentTreeNodeOfstValueClazy(st.arr,
+				r).value.Merge(summedR)
+			r = r/2 - 1
 		} else {
 			r = r / 2
 		}
 	}
-	return summedL.
-		Merge(summedR)
+	return summedL.Merge(summedR)
 }
 func (st SegmentTreeG1stValueG2lazy,
 
@@ -680,61 +680,74 @@ func (st SegmentTreeG1stValueG2lazy,
 		st.n {
 		panic("invalid rMax")
 	}
-	st.pushUpdates(rMax)
-	i := rMax +
-		st.n
-	if !predicate(GetG1segmentTreeNodeOfstValueClazy(st.arr, i).
-		value) {
-		return -1,
-			false
+	st.
+		pushUpdates(rMax)
+	i := rMax + st.n
+	if !predicate(GetG1segmentTreeNodeOfstValueClazy(st.
+		arr,
+		i).value) {
+		return -1, false
 	}
-	summedValue := st.zeroValue
-	for i >
-		0 {
-		arrVal := GetG1segmentTreeNodeOfstValueClazy(st.arr, i)
-		(arrVal.update).ApplyUpdate(&arrVal.
-			value)
-		val := arrVal.
-			value.Merge(summedValue)
+	summedValue :=
+		st.
+			zeroValue
+	for i > 0 {
+		arrVal := GetG1segmentTreeNodeOfstValueClazy(st.
+			arr,
+
+			i)
+		(arrVal.update).ApplyUpdate(&arrVal.value)
+		val := arrVal.value.
+			Merge(summedValue)
 		if predicate(val) {
 
 			if IsPowerOf2G1int(i) {
+
 				return 0, true
 			}
 			if i%2 == 0 {
-				i = i/2 - 1
+				i = i/
+					2 - 1
 				summedValue = val.Merge(summedValue)
 			} else {
-				i =
-					i / 2
+				i = i /
+					2
 			}
 		} else {
-
 			break
 		}
 	}
-	upd :=
-		GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update
+	upd := GetG1segmentTreeNodeOfstValueClazy(st.
+		arr, i).update
+	for i < st.
+		n {
+		val := GetG1segmentTreeNodeOfstValueClazy(st.arr,
 
-	for i < st.n {
-		val := GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*i+1)
-		(upd).
-			Push(&val.update)
-
-		(upd).ApplyUpdate(&val.
-			value)
+			2*
+				i+1)
+		(upd).Push(&val.
+			update,
+		)
+		(upd).ApplyUpdate(
+			&val.
+				value)
 		combined := val.
 			value.Merge(summedValue)
-		if predicate(combined) {
+		if predicate(
+			combined) {
 			summedValue = combined
-			i = 2 * i
+
+			i = 2 *
+				i
 		} else {
-			upd = val.update
-			i = 2*i + 1
+			upd =
+				val.
+					update
+			i = 2*i +
+				1
 		}
 	}
-	return i -
-		st.n + 1, true
+	return i - st.n + 1, true
 }
 func (st SegmentTreeG1stValueG2lazy,
 
@@ -745,18 +758,25 @@ func (st SegmentTreeG1stValueG2lazy,
 		log2n; shift > 0; shift-- {
 		i := i >>
 			shift
-		update := GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update
-		GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update = st.zeroUpdate
-
-		(update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr, i).value)
-		(update).Push(&GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*i).update)
-		(update).Push(
-			&GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*
-				i+1).update)
+		update := GetG1segmentTreeNodeOfstValueClazy(st.arr,
+			i).update
+		GetG1segmentTreeNodeOfstValueClazy(st.arr,
+			i).update = st.zeroUpdate
+		(update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(
+			st.
+				arr, i).value)
+		(update).Push(&GetG1segmentTreeNodeOfstValueClazy(
+			st.arr, 2*i).update,
+		)
+		(update).Push(&GetG1segmentTreeNodeOfstValueClazy(st.
+			arr, 2*i+1).update,
+		)
 	}
-	(GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr, i).value)
-	GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update =
-		st.zeroUpdate
+	(GetG1segmentTreeNodeOfstValueClazy(st.arr,
+		i).update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr, i).value)
+	GetG1segmentTreeNodeOfstValueClazy(st.arr,
+		i).update = st.
+		zeroUpdate
 }
 func (st SegmentTreeG1stValueG2lazy,
 
@@ -768,15 +788,16 @@ func (st SegmentTreeG1stValueG2lazy,
 		left := GetG1segmentTreeNodeOfstValueClazy(st.arr,
 			2*i)
 		(left.
-			update).ApplyUpdate(&left.
+			update).ApplyUpdate(&left.value)
+		right := GetG1segmentTreeNodeOfstValueClazy(st.arr,
+			2*i+1)
+		(right.update).ApplyUpdate(&right.value)
+		GetG1segmentTreeNodeOfstValueClazy(
+			st.
+				arr, i).value = left.value.Merge(right.
 			value)
-		right :=
-			GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*i+1)
-		(right.update).ApplyUpdate(&right.
-			value)
-		GetG1segmentTreeNodeOfstValueClazy(st.arr, i).value = left.value.
-			Merge(right.value)
-		i = i / 2
+		i = i /
+			2
 	}
 }
 
