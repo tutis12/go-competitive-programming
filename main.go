@@ -33,7 +33,7 @@ func main() {
 		stdin.File = inputFile
 	}
 	defer stdout.WriteAll()
-	defer debug.Recover()
+	defer debug.ExitOnPanic()
 
 	//hackercup.Hackercup(stdin, stdout)
 	SolveX(stdin, stdout)

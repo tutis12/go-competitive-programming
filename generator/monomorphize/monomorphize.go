@@ -26,7 +26,7 @@ type instRecord struct {
 	argTypes []types.Type // types for hoistability checks (nil => unknown => non-hoistable)
 }
 
-// --- DROP-IN REPLACEMENT: Monomorphize with debug formatting on failure ---
+// --- DROP-IN REPLACEMENT: Monomorphize with alpha-renaming & safety guards ---
 func Monomorphize(src []byte) []byte {
 	const maxIters = 2000 // hard stop to avoid accidental infinite loops
 
@@ -706,33 +706,229 @@ func cloneExprList(es []ast.Expr) []ast.Expr {
 	return out
 }
 
-// Clone expr via print-parse roundtrip to keep things simple and robust.
+// Clone expr via print-parse roundtrip WITHOUT invoking the (file) resolver.
 func cloneExpr(e ast.Expr) ast.Expr {
-	src := nodeToSnippet("package p; var _ = (", e, ")")
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "clone.go", src, 0)
+	var buf bytes.Buffer
+	if err := printer.Fprint(&buf, token.NewFileSet(), e); err != nil {
+		panic(err)
+	}
+	exprSrc := buf.String()
+	expr, err := parser.ParseExpr(exprSrc)
 	if err != nil {
 		panic(err)
 	}
-	vs := f.Decls[0].(*ast.GenDecl).Specs[0].(*ast.ValueSpec)
-	par := vs.Values[0].(*ast.ParenExpr)
-	return par.X
+	return expr
 }
 
-func nodeToSnippet(prefix string, n ast.Node, suffix string) string {
-	var buf bytes.Buffer
-	buf.WriteString(prefix)
-	if err := printer.Fprint(&buf, token.NewFileSet(), n); err != nil {
-		panic(err)
+// ---- Alpha-renaming of type parameters (hygienic) ----
+
+// Renames declared type params on a cloned TypeSpec and all of their uses.
+func alphaRenameTypeSpecParams(ts *ast.TypeSpec) (orig, fresh []string) {
+	if ts == nil || ts.TypeParams == nil || len(ts.TypeParams.List) == 0 {
+		return nil, nil
 	}
-	buf.WriteString(suffix)
-	return buf.String()
+	orig = flattenFieldListIdents(ts.TypeParams)
+	fresh = make([]string, len(orig))
+	for i := range orig {
+		fresh[i] = fmt.Sprintf("__P%d", i)
+	}
+
+	// Rename declarations: walk names sequentially, not by field index.
+	declRename := map[string]string{}
+	idx := 0
+	for _, f := range ts.TypeParams.List {
+		for _, id := range f.Names {
+			declRename[id.Name] = fresh[idx]
+			id.Name = fresh[idx]
+			idx++
+		}
+	}
+
+	// Rename uses in type positions.
+	renameTypeNamesInNode(ts, declRename)
+	return orig, fresh
+}
+
+// Renames declared type params on a cloned FuncDecl and their uses.
+func alphaRenameFuncTypeParams(fd *ast.FuncDecl) (orig, fresh []string) {
+	if fd == nil || fd.Type == nil || fd.Type.TypeParams == nil || len(fd.Type.TypeParams.List) == 0 {
+		return nil, nil
+	}
+	orig = flattenFieldListIdents(fd.Type.TypeParams)
+	fresh = make([]string, len(orig))
+	for i := range orig {
+		fresh[i] = fmt.Sprintf("__P%d", i)
+	}
+
+	// Rename declarations: walk names sequentially, not by field index.
+	declRename := map[string]string{}
+	idx := 0
+	for _, f := range fd.Type.TypeParams.List {
+		for _, id := range f.Names {
+			declRename[id.Name] = fresh[idx]
+			id.Name = fresh[idx]
+			idx++
+		}
+	}
+
+	// Rename uses in type positions.
+	renameTypeNamesInNode(fd, declRename)
+	return orig, fresh
+}
+
+func renameTypeNamesInNode(n ast.Node, rename map[string]string) {
+	if n == nil || len(rename) == 0 {
+		return
+	}
+
+	// Define this BEFORE it's used below.
+	renameInExpr := func(e ast.Expr) ast.Expr {
+		return renameTypeExpr(e, rename)
+	}
+
+	ast.Inspect(n, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.Field:
+			x.Type = renameInExpr(x.Type)
+
+		case *ast.ValueSpec:
+			if x.Type != nil {
+				x.Type = renameInExpr(x.Type)
+			}
+
+		case *ast.TypeSpec:
+			x.Type = renameInExpr(x.Type)
+
+		case *ast.CompositeLit:
+			x.Type = renameInExpr(x.Type)
+
+		case *ast.CallExpr:
+			// Rename inside builtin type arguments.
+			if id, ok := x.Fun.(*ast.Ident); ok {
+				switch id.Name {
+				case "new":
+					if len(x.Args) == 1 {
+						x.Args[0] = renameInExpr(x.Args[0])
+					}
+				case "make":
+					if len(x.Args) >= 1 {
+						x.Args[0] = renameInExpr(x.Args[0])
+					}
+				}
+			}
+			// And the callee if it syntactically looks like a type (conversion).
+			if !isSelector(x.Fun) && looksLikeTypeExpr(x.Fun) {
+				x.Fun = renameInExpr(x.Fun)
+			}
+
+		case *ast.IndexExpr:
+			x.X = renameInExpr(x.X)
+			x.Index = renameInExpr(x.Index)
+
+		case *ast.IndexListExpr:
+			x.X = renameInExpr(x.X)
+			for i := range x.Indices {
+				x.Indices[i] = renameInExpr(x.Indices[i])
+			}
+		}
+		return true
+	})
+}
+
+func renameInFuncType(ft *ast.FuncType, rename map[string]string) *ast.FuncType {
+	var params, results *ast.FieldList
+	if ft.Params != nil {
+		params = &ast.FieldList{}
+		for _, f := range ft.Params.List {
+			ff := *f
+			ff.Type = renameTypeExpr(f.Type, rename)
+			params.List = append(params.List, &ff)
+		}
+	}
+	if ft.Results != nil {
+		results = &ast.FieldList{}
+		for _, f := range ft.Results.List {
+			ff := *f
+			ff.Type = renameTypeExpr(f.Type, rename)
+			results.List = append(results.List, &ff)
+		}
+	}
+	return &ast.FuncType{
+		Params:     params,
+		Results:    results,
+		TypeParams: ft.TypeParams, // decls already renamed
+	}
+}
+
+func renameTypeExpr(e ast.Expr, rename map[string]string) ast.Expr {
+	switch t := e.(type) {
+	case *ast.Ident:
+		if nn, ok := rename[t.Name]; ok {
+			t.Name = nn
+		}
+		return e
+	case *ast.ParenExpr:
+		t.X = renameTypeExpr(t.X, rename)
+		return t
+	case *ast.StarExpr:
+		t.X = renameTypeExpr(t.X, rename)
+		return t
+	case *ast.ArrayType:
+		if t.Len != nil {
+			t.Len = renameTypeExpr(t.Len, rename)
+		}
+		t.Elt = renameTypeExpr(t.Elt, rename)
+		return t
+	case *ast.MapType:
+		t.Key = renameTypeExpr(t.Key, rename)
+		t.Value = renameTypeExpr(t.Value, rename)
+		return t
+	case *ast.ChanType:
+		t.Value = renameTypeExpr(t.Value, rename)
+		return t
+	case *ast.SelectorExpr:
+		t.X = renameTypeExpr(t.X, rename)
+		return t
+	case *ast.IndexExpr:
+		t.X = renameTypeExpr(t.X, rename)
+		t.Index = renameTypeExpr(t.Index, rename)
+		return t
+	case *ast.IndexListExpr:
+		t.X = renameTypeExpr(t.X, rename)
+		for i := range t.Indices {
+			t.Indices[i] = renameTypeExpr(t.Indices[i], rename)
+		}
+		return t
+	case *ast.StructType:
+		if t.Fields != nil {
+			for _, f := range t.Fields.List {
+				f.Type = renameTypeExpr(f.Type, rename)
+			}
+		}
+		return t
+	case *ast.InterfaceType:
+		if t.Methods != nil {
+			for _, f := range t.Methods.List {
+				if ft, ok := f.Type.(*ast.FuncType); ok {
+					f.Type = renameInFuncType(ft, rename)
+				} else {
+					f.Type = renameTypeExpr(f.Type, rename)
+				}
+			}
+		}
+		return t
+	case *ast.FuncType:
+		return renameInFuncType(t, rename)
+	default:
+		return e
+	}
 }
 
 func cloneTypeDecl(ts *ast.TypeSpec, newName string, subst map[string]ast.Expr) ast.Decl {
 	var buf bytes.Buffer
 	_ = printer.Fprint(&buf, token.NewFileSet(), ts)
 	src := "package p; type " + buf.String()
+
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "ty.go", src, parser.ParseComments)
 	if err != nil {
@@ -741,12 +937,29 @@ func cloneTypeDecl(ts *ast.TypeSpec, newName string, subst map[string]ast.Expr) 
 	gd := f.Decls[0].(*ast.GenDecl)
 	cp := gd.Specs[0].(*ast.TypeSpec)
 
-	applySubstToNode(cp, subst)
+	// 1) Alpha-rename declared params to hygienic names.
+	orig, fresh := alphaRenameTypeSpecParams(cp)
+
+	// 2) POSitional remap: rebuild a map from the fresh names to concrete args
+	// strictly by index, ignoring the user-facing names (value/update).
+	if len(orig) > 0 {
+		freshSubst := make(map[string]ast.Expr, len(fresh))
+		for i := range fresh {
+			// 'subst' is keyed by original names; use 'orig[i]' to pick the ith arg,
+			// then bind it to the fresh name.
+			if rep, ok := subst[orig[i]]; ok {
+				freshSubst[fresh[i]] = rep
+			}
+		}
+		applySubstToNode(cp, freshSubst)
+	} else {
+		applySubstToNode(cp, subst)
+	}
+
+	// 3) Drop type params and set final name.
 	cp.TypeParams = nil
 	cp.Name = ast.NewIdent(newName)
-
-	out := &ast.GenDecl{Tok: token.TYPE, Specs: []ast.Spec{cp}}
-	return out
+	return &ast.GenDecl{Tok: token.TYPE, Specs: []ast.Spec{cp}}
 }
 
 func cloneMethodForConcrete(fd *ast.FuncDecl, baseName, concreteName string, subst map[string]ast.Expr) *ast.FuncDecl {
@@ -776,6 +989,7 @@ func cloneMethodForConcrete(fd *ast.FuncDecl, baseName, concreteName string, sub
 	}
 	recv.Type = newBase
 
+	// methods don't declare their own type params; just substitute.
 	applySubstToNode(clone, subst)
 
 	return clone
@@ -792,23 +1006,42 @@ func cloneFuncForConcrete(fd *ast.FuncDecl, newName string, subst map[string]ast
 	}
 	clone := f.Decls[0].(*ast.FuncDecl)
 
+	// 1) Alpha-rename declared params to hygienic names.
+	orig, fresh := alphaRenameFuncTypeParams(clone)
+
+	// 2) Rebuild subst keyed by the fresh names and apply.
+	if len(orig) > 0 {
+		freshSubst := map[string]ast.Expr{}
+		for i, o := range orig {
+			if rep, ok := subst[o]; ok {
+				freshSubst[fresh[i]] = rep
+			}
+		}
+		applySubstToNode(clone, freshSubst)
+	} else {
+		applySubstToNode(clone, subst)
+	}
+
+	// 3) Drop type params and set final name.
 	if clone.Type != nil {
 		clone.Type.TypeParams = nil
 	}
 	clone.Name = ast.NewIdent(newName)
 
-	applySubstToNode(clone, subst)
-
 	return clone
 }
 
-// applySubstToNode walks nn and applies 'subst' where appropriate.
-// Important: we do NOT rewrite method callees like (update).ApplyUpdate(...).
+// applySubstToNode walks n and applies 'subst' **only** in safe places:
+// - type positions (Field.Type, ValueSpec.Type, TypeSpec.Type, CompositeLit.Type)
+// - generic type instantiations inside Index/IndexList
+// - call callee iff it syntactically looks like a type (conversion)
+// We intentionally DO NOT rewrite arbitrary value expressions (ParenExpr,
+// StarExpr, UnaryExpr, Assign RHS, Call args, etc.) to avoid changing
+// value receivers like (update).ApplyUpdate into (lazy).ApplyUpdate.
 func applySubstToNode(n ast.Node, subst map[string]ast.Expr) {
-	if n == nil {
+	if n == nil || len(subst) == 0 {
 		return
 	}
-
 	ast.Inspect(n, func(node ast.Node) bool {
 		switch x := node.(type) {
 		case *ast.Field:
@@ -818,70 +1051,46 @@ func applySubstToNode(n ast.Node, subst map[string]ast.Expr) {
 			if x.Type != nil {
 				x.Type = substInExpr(x.Type, subst)
 			}
-			for i, v := range x.Values {
-				x.Values[i] = substInExpr(v, subst)
-			}
+			// Do NOT touch x.Values (value expressions)
 
 		case *ast.TypeSpec:
 			x.Type = substInExpr(x.Type, subst)
 
-		case *ast.ReturnStmt:
-			for i, r := range x.Results {
-				x.Results[i] = substInExpr(r, subst)
-			}
-
-		case *ast.AssignStmt:
-			for i, r := range x.Rhs {
-				x.Rhs[i] = substInExpr(r, subst)
-			}
-
 		case *ast.CompositeLit:
-			// Also substitute inside the literal's type.
+			// Only the literal's **type** is a type position.
 			x.Type = substInExpr(x.Type, subst)
-			for i, e := range x.Elts {
-				x.Elts[i] = substInExpr(e, subst)
-			}
-
-		case *ast.UnaryExpr:
-			// Handle &T{...} and similar.
-			x.X = substInExpr(x.X, subst)
+			// Do NOT touch x.Elts (value expressions)
 
 		case *ast.CallExpr:
-			// Do NOT rewrite method callees: foo.Bar(...) must remain untouched.
-			// Only rewrite the callee if it syntactically looks like a type expr
-			// (i.e., a conversion), e.g. (value)(x), (*value)(x), value(x).
-			if _, isSel := x.Fun.(*ast.SelectorExpr); !isSel && looksLikeTypeExpr(x.Fun) {
+			if !isSelector(x.Fun) && looksLikeTypeExpr(x.Fun) {
 				x.Fun = substInExpr(x.Fun, subst)
 			}
-			// Always rewrite arguments.
-			for i, a := range x.Args {
-				x.Args[i] = substInExpr(a, subst)
+			// Substitute types inside builtin type-args that appear in call arguments.
+			for i := range x.Args {
+				rewriteBuiltinTypeArgsInExpr(x.Args[i], subst)
 			}
 
 		case *ast.IndexExpr:
+			// Generic instantiation Foo[T] in either type or value context.
 			x.X = substInExpr(x.X, subst)
 			x.Index = substInExpr(x.Index, subst)
 
 		case *ast.IndexListExpr:
+			// Generic instantiation Foo[T,U]
 			x.X = substInExpr(x.X, subst)
 			for i, a := range x.Indices {
 				x.Indices[i] = substInExpr(a, subst)
 			}
-
-		case *ast.StarExpr:
-			x.X = substInExpr(x.X, subst)
-
-		case *ast.ParenExpr:
-			x.X = substInExpr(x.X, subst)
 		}
 		return true
 	})
 }
 
-// looksLikeTypeExpr reports whether e is syntactically a type expression
-// composed only of type-ish nodes (Ident, Selector over pkg Ident, Index, Star,
-// Paren, etc.). This lets us safely rewrite conversions like value(x) or
-// (*value)(x) without touching value-method calls like (update).ApplyUpdate.
+func isSelector(e ast.Expr) bool {
+	_, ok := e.(*ast.SelectorExpr)
+	return ok
+}
+
 func looksLikeTypeExpr(e ast.Expr) bool {
 	switch t := e.(type) {
 	case *ast.Ident:
@@ -890,17 +1099,23 @@ func looksLikeTypeExpr(e ast.Expr) bool {
 		return looksLikeTypeExpr(t.X)
 	case *ast.StarExpr:
 		return looksLikeTypeExpr(t.X)
+
 	case *ast.ArrayType:
-		// Conversion callee is never an array type; keep false to be conservative.
-		return false
-	case *ast.ChanType, *ast.MapType, *ast.StructType, *ast.InterfaceType, *ast.FuncType:
-		// These can be types, but they don't occur as conversion callees in normal code.
-		// Keep false to avoid over-matching; extend if you really need them.
-		return false
+		// Covers slices (Len == nil) and arrays; both are valid type exprs.
+		return true
+	case *ast.MapType:
+		return true
+	case *ast.ChanType:
+		return true
+	case *ast.FuncType:
+		return true
+	case *ast.StructType:
+		return true
+	case *ast.InterfaceType:
+		return true
+
 	case *ast.SelectorExpr:
-		// Qualifed type like pkg.Type or pkg.Generic[T]
-		// Only treat as type-ish if X itself is an Ident (a package name) or
-		// recursively type-ish (for nested pkg paths).
+		// pkg.Type or pkg.Generic[T]; treat as type-ish if left side is type-ish.
 		return looksLikeTypeExpr(t.X)
 	case *ast.IndexExpr:
 		return looksLikeTypeExpr(t.X) && looksLikeTypeExpr(t.Index)
@@ -920,9 +1135,6 @@ func looksLikeTypeExpr(e ast.Expr) bool {
 }
 
 // substInExpr applies 'subst' to a type/value expression where safe.
-// Important: for SelectorExpr, if the left side is a type parameter name,
-// we do NOT rewrite it; otherwise (update).ApplyUpdate would become
-// (lazy).ApplyUpdate (incorrect).
 func substInExpr(e ast.Expr, subst map[string]ast.Expr) ast.Expr {
 	switch t := e.(type) {
 	case *ast.Ident:
@@ -956,11 +1168,18 @@ func substInExpr(e ast.Expr, subst map[string]ast.Expr) ast.Expr {
 		return t
 
 	case *ast.SelectorExpr:
-		// If the left side is exactly a type parameter identifier that appears
-		// in 'subst', treat it as a value receiver/expr and DO NOT rewrite it.
+		// Avoid changing method call receiver semantics:
+		// if left side is a type parameter identifier we substitute for, skip.
 		if id, ok := t.X.(*ast.Ident); ok {
 			if _, isTP := subst[id.Name]; isTP {
 				return t
+			}
+		}
+		if pe, ok := t.X.(*ast.ParenExpr); ok {
+			if innerID, ok := pe.X.(*ast.Ident); ok {
+				if _, isTP := subst[innerID.Name]; isTP {
+					return t
+				}
 			}
 		}
 		t.X = substInExpr(t.X, subst)
@@ -1660,4 +1879,31 @@ func debugTypecheckFailure(fset *token.FileSet, file *ast.File, err error) {
 			fmt.Printf("            %s^\n", spaces)
 		}
 	}
+}
+
+// rewriteBuiltinTypeArgsInExpr finds nested calls to builtins like
+//
+//	new(T)  and  make(T, ...)
+//
+// inside the expression e and substitutes their type arguments.
+func rewriteBuiltinTypeArgsInExpr(e ast.Expr, subst map[string]ast.Expr) {
+	ast.Inspect(e, func(n ast.Node) bool {
+		ce, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := ce.Fun.(*ast.Ident); ok {
+			switch id.Name {
+			case "new":
+				if len(ce.Args) == 1 {
+					ce.Args[0] = substInExpr(ce.Args[0], subst)
+				}
+			case "make":
+				if len(ce.Args) >= 1 {
+					ce.Args[0] = substInExpr(ce.Args[0], subst)
+				}
+			}
+		}
+		return true
+	})
 }

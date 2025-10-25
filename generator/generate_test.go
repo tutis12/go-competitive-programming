@@ -10,13 +10,12 @@ import (
 
 const generated_file_name = "output/generated_main.go"
 
-type fileInfo struct {
-	pkg     string
-	content string
-	name    string
-}
-
 func TestMergeEverything(*testing.T) {
+	type fileInfo struct {
+		pkg     string
+		content string
+		name    string
+	}
 	var files []fileInfo
 	dirNames := []string{"../"}
 	for len(dirNames) != 0 {
@@ -129,18 +128,20 @@ func TestMergeEverything(*testing.T) {
 	if err != nil {
 		panic(err.Error())
 	}
+	okVersion := totalFile
+	defer func() {
+		fmt.Fprintln(file, okVersion)
+		file.Sync()
+		file.Close()
+	}()
 
 	src := []byte(totalFile)
 
-	src, err = sanitizeCode(src)
+	src, err = normalizeGo(src)
 	if err != nil {
-		fmt.Fprintln(file, totalFile)
-		err1 := file.Sync()
-		if err1 != nil {
-			panic(err1.Error())
-		}
 		panic(err.Error())
 	}
+	okVersion = string(src)
 
 	// DEBUG: Save file before RemoveGenerics
 	os.MkdirAll("output/1", 0755)
@@ -151,6 +152,12 @@ func TestMergeEverything(*testing.T) {
 	}
 
 	src = monomorphize.Monomorphize(src)
+	src, err = normalizeGo(src)
+	if err != nil {
+		panic(err)
+	}
+
+	okVersion = string(src)
 
 	// DEBUG: Save file after RemoveGenerics
 	os.MkdirAll("output/2", 0755)
@@ -160,11 +167,12 @@ func TestMergeEverything(*testing.T) {
 		debugFile2.Close()
 	}
 
-	src = RemoveUnusedCode(src)
-	src, err = sanitizeCode(src)
+	src = PruneUnused(src)
+	src, err = normalizeGo(src)
 	if err != nil {
 		panic(err)
 	}
+	okVersion = string(src)
 
 	// DEBUG: Save file after RemoveUnusedCode
 	os.MkdirAll("output/3", 0755)
@@ -174,17 +182,13 @@ func TestMergeEverything(*testing.T) {
 		debugFile3.Close()
 	}
 
-	src = RemoveUnsafeCasts(src)
+	src = PruneUnsafeCasts(src)
 
-	src, err = sanitizeCode(src)
+	src, err = normalizeGo(src)
 	if err != nil {
-		fmt.Fprintln(file, totalFile)
-		err1 := file.Sync()
-		if err1 != nil {
-			panic(err1.Error())
-		}
 		panic(err.Error())
 	}
+	okVersion = string(src)
 
 	// DEBUG: Save final processed file
 	os.MkdirAll("output/4", 0755)
@@ -193,6 +197,4 @@ func TestMergeEverything(*testing.T) {
 		fmt.Fprintln(debugFile4, string(src))
 		debugFile4.Close()
 	}
-
-	fmt.Fprintln(file, string(src))
 }

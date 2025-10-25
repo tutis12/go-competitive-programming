@@ -20,9 +20,7 @@ func main() {
 	s.Print2()
 }
 
-type XG1int struct {
-	Value *int
-}
+type XG1int struct{ Value *int }
 
 func (x XG1int) Print1() {
 	fmt.Println(x.

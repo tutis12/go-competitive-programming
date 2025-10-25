@@ -24,20 +24,20 @@ func main() {
 	var t []XG1int
 	PrintSliceG1XOfint(t)
 }
-func PrintSliceG1XOfXOfint(X []XG1XOfint) {
+func PrintSliceG1XOfXOfint(X []XG1XOfint,
+
+) {
 	for _, X := range X {
 		fmt.Println(X)
 	}
 }
-func PrintSliceG1XOfint(X []XG1int) {
+func PrintSliceG1XOfint(X []XG1int,
+
+) {
 	for _, X := range X {
 		fmt.Println(X)
 	}
 }
 
-type XG1XOfint struct {
-	Value XG1int
-}
-type XG1int struct {
-	Value int
-}
+type XG1XOfint struct{ Value XG1int }
+type XG1int struct{ Value int }

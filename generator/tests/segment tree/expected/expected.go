@@ -291,18 +291,19 @@ func LogFloor(x uint64) int {
 	}
 	return 63 - bits.LeadingZeros64(x)
 }
-func IsPowerOf2G1int(x int) bool {
+func IsPowerOf2G1int(
+	x int,
+
+) bool {
 
 	x64 := uint64(x)
-	return x64 != 0 && (x64&(x64-1)) ==
-		0
+	return x64 != 0 && (x64&(x64-1)) == 0
 }
 
 type SegmentTreeG1stValueG2lazy struct {
-	log2n int
-	n     int
-	arr   []segmentTreeNodeG1stValueG2lazy
-
+	log2n     int
+	n         int
+	arr       []segmentTreeNodeG1stValueG2lazy
 	zeroValue stValue
 
 	zeroUpdate lazy
@@ -310,7 +311,9 @@ type SegmentTreeG1stValueG2lazy struct {
 
 func (st SegmentTreeG1stValueG2lazy,
 
-) SetValue(i int, val stValue) {
+) SetValue(i int, val stValue,
+
+) {
 	if i < 0 || i >= st.n {
 		panic("index out of bounds")
 	}
@@ -323,8 +326,11 @@ func (st SegmentTreeG1stValueG2lazy,
 }
 func (st SegmentTreeG1stValueG2lazy,
 
-) Update(l,
-	r int, upd lazy) {
+) Update(
+	l,
+	r int, upd lazy,
+
+) {
 	l = max(l, 0)
 	r = min(r,
 		st.n-1)
@@ -341,8 +347,7 @@ func (st SegmentTreeG1stValueG2lazy,
 		for l <=
 			r {
 			if l%2 == 1 {
-				(upd).Push(&(*GetG1segmentTreeNodeOfstValueClazy(st.arr, l)).
-					update)
+				(upd).Push(&(*GetG1segmentTreeNodeOfstValueClazy(st.arr, l)).update)
 				l = l/2 + 1
 			} else {
 				l = l / 2
@@ -452,8 +457,7 @@ func (st SegmentTreeG1stValueG2lazy,
 			GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*i+1)
 		(upd).Push(
 			&val.update)
-		(upd).
-			ApplyUpdate(&val.value)
+		(upd).ApplyUpdate(&val.value)
 		combined := val.value.
 			Merge(summedValue)
 		if predicate(combined) {
@@ -476,19 +480,16 @@ func (st SegmentTreeG1stValueG2lazy,
 		i := i >>
 
 			shift
-		lazy :=
+		update :=
 			GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update
 		GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update = st.zeroUpdate
-		(lazy).
-			ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr,
-				i).value,
-			)
-		(lazy).
-			Push(&GetG1segmentTreeNodeOfstValueClazy(
-				st.arr, 2*i).update)
-		(lazy).
-			Push(&GetG1segmentTreeNodeOfstValueClazy(st.arr,
-				2*i+1).update)
+		(update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.arr,
+			i).value,
+		)
+		(update).Push(&GetG1segmentTreeNodeOfstValueClazy(
+			st.arr, 2*i).update)
+		(update).Push(&GetG1segmentTreeNodeOfstValueClazy(st.arr,
+			2*i+1).update)
 	}
 	(GetG1segmentTreeNodeOfstValueClazy(st.arr, i).update).ApplyUpdate(&GetG1segmentTreeNodeOfstValueClazy(st.
 		arr, i).value)
@@ -498,15 +499,15 @@ func (st SegmentTreeG1stValueG2lazy,
 }
 func (st SegmentTreeG1stValueG2lazy,
 
-) rebuild(i int) {
+) rebuild(
+	i int) {
 	i += st.n
 	i /= 2
 	for i != 0 {
 		left := GetG1segmentTreeNodeOfstValueClazy(st.arr,
 			2*i)
-		(left.update).
-			ApplyUpdate(&left.
-				value)
+		(left.update).ApplyUpdate(&left.
+			value)
 		right := GetG1segmentTreeNodeOfstValueClazy(st.arr, 2*i+1)
 		(right.update).ApplyUpdate(&right.value)
 		GetG1segmentTreeNodeOfstValueClazy(st.arr,

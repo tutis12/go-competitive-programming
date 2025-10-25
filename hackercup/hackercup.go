@@ -15,7 +15,7 @@ func Hackercup(
 	stdout *fastio.Writer,
 ) {
 	start := time.Now()
-	defer debug.Recover()
+	defer debug.ExitOnPanic()
 	defer func() {
 		stdout.WriteAll()
 		time.Sleep(time.Millisecond)

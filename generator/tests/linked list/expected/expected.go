@@ -71,10 +71,13 @@ func main() {
 type LLG1SliceLLOfint struct {
 	Next  *LLG1SliceLLOfint
 	Value []LLG1int
-	Prev  *LLG1SliceLLOfint
+
+	Prev *LLG1SliceLLOfint
 }
 
-func (l *LLG1SliceLLOfint) Append(value []LLG1int) {
+func (l *LLG1SliceLLOfint) Append(value []LLG1int,
+
+) {
 	newNode := &LLG1SliceLLOfint{Value: value}
 	if l == nil {
 		l = newNode
@@ -91,7 +94,9 @@ func (l *LLG1SliceLLOfint) Append(value []LLG1int) {
 		}
 	}
 }
-func (l *LLG1SliceLLOfint) Prepend(value []LLG1int) {
+func (l *LLG1SliceLLOfint) Prepend(value []LLG1int,
+
+) {
 	newNode := &LLG1SliceLLOfint{Value: value}
 	if l == nil {
 		l = newNode

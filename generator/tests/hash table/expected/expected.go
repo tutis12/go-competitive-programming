@@ -328,20 +328,23 @@ func (hm *HashTableG1intG2intHashG3int,
 	hm.entries1 = newEntries1
 	hm.entries2 = newEntries2
 }
-func GetG1SlicehashTableEntryOfintCint(slice [][]hashTableEntryG1intG2int, index int) *[]hashTableEntryG1intG2int {
+func GetG1SlicehashTableEntryOfintCint(slice [][]hashTableEntryG1intG2int,
+	index int) *[]hashTableEntryG1intG2int {
 	return (*[]hashTableEntryG1intG2int)(unsafe.
 		Pointer(uintptr(unsafe.
 			Pointer(unsafe.SliceData(slice))) + uintptr(index)*unsafe.Sizeof(*new([]hashTableEntryG1intG2int))),
 	)
 }
-func GetG1hashTableEntryOfintCint(slice []hashTableEntryG1intG2int, index int) *hashTableEntryG1intG2int {
+func GetG1hashTableEntryOfintCint(slice []hashTableEntryG1intG2int,
+	index int) *hashTableEntryG1intG2int {
 	return (*hashTableEntryG1intG2int)(unsafe.
 		Pointer(uintptr(unsafe.
 			Pointer(unsafe.SliceData(slice))) + uintptr(index)*unsafe.Sizeof(*new(hashTableEntryG1intG2int))),
 	)
 }
 func GetArrG1hashTableEntryOfintCint(
-	slice []hashTableEntryG1intG2int, offset int) *[8]hashTableEntryG1intG2int {
+	slice []hashTableEntryG1intG2int,
+	offset int) *[8]hashTableEntryG1intG2int {
 	data :=
 		unsafe.
 			Add(unsafe.Pointer(unsafe.SliceData(slice)),

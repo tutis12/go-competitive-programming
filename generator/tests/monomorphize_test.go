@@ -46,6 +46,7 @@ func testCase(
 	if err != nil {
 		panic(err.Error())
 	}
+	expectedFile.Close()
 	output := monomorphize.Monomorphize(src)
 
 	output, err = format.Source(output)
@@ -67,6 +68,17 @@ func testCase(
 		}
 		fmt.Printf("Full output:\n")
 		fmt.Println(string(output))
+
+		file, err := os.Create(fmt.Sprintf("%s/expected/expected.go", name))
+		if err != nil {
+			panic(err.Error())
+		}
+		defer file.Close()
+		_, err = file.Write(output)
+		if err != nil {
+			panic(err.Error())
+		}
+
 		panic("mismatch in " + name)
 	}
 }
