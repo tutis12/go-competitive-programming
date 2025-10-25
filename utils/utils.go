@@ -57,6 +57,15 @@ func Transpose(X *[][]int) {
 	*X = M2
 }
 
+func TransposeSquare(X [][]int) {
+	n := len(X)
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			X[i][j], X[j][i] = X[j][i], X[i][j]
+		}
+	}
+}
+
 func CollectMap[X comparable](m map[X]struct{}) []X {
 	res := make([]X, 0, len(m))
 	for k := range m {
@@ -96,4 +105,11 @@ func GetArr[T any](slice []T, offset int) *[8]T {
 type Pair[X any, Y any] struct {
 	X X
 	Y Y
+}
+
+func Abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

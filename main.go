@@ -3,14 +3,12 @@ package main
 import (
 	"main/debug"
 	"main/fastio"
-	"main/hackercup"
 	"os"
 )
 
 const (
-	fromFile   = false
-	inputFile  = "warm_up_input.txt"
-	outputFile = "output.txt"
+	fromFile  = false
+	inputFile = "crash_course_input.txt"
 )
 
 func main() {
@@ -22,58 +20,48 @@ func main() {
 	}
 
 	if fromFile {
+		outputFile, err := os.Create("io/output" + inputFile)
+		if err != nil {
+			panic(err.Error())
+		}
+		stdout.File = outputFile
+
 		inputFile, err := os.Open("io/" + inputFile)
 		if err != nil {
 			panic(err.Error())
 		}
 		stdin.File = inputFile
-
-		outputFile, err := os.Create("io/" + outputFile)
-		if err != nil {
-			panic(err.Error())
-		}
-		stdout.File = outputFile
 	}
 	defer stdout.WriteAll()
 	defer debug.Recover()
 
-	hackercup.Hackercup(stdin, stdout)
+	//hackercup.Hackercup(stdin, stdout)
+	SolveX(stdin, stdout)
 }
 
 /*input
 6
-5
-1 2 3 4 5
-1 2 3 4 5
-3
-1 1 2
-2 2 2
-4
-1 2 3 4
-3 4 4 4
-4
-1 2 3 4
-1 2 3 3
-3
-1 3 3
-2 2 2
+7
+ABBAAAB
+1
+A
+1
+B
 2
-1 2
-2 1
+AB
+6
+AAAAAA
+7
+BBBBBBA
 
 */
 
 /*output
-Case #1: 0
-Case #2: 2
-3 1
-3 2
-Case #3: 3
-3 1
-4 2
-4 3
-Case #4: -1
-Case #5: -1
-Case #6: -1
+Case #1: Alice
+Case #2: Alice
+Case #3: Bob
+Case #4: Bob
+Case #5: Alice
+Case #6: Alice
 
 */

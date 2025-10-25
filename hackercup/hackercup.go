@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-func Hackercup(stdin *fastio.Reader, stdout *fastio.Writer) {
+func Hackercup(
+	stdin *fastio.Reader,
+	stdout *fastio.Writer,
+) {
 	start := time.Now()
 	defer debug.Recover()
 	defer func() {
@@ -36,7 +39,7 @@ func Hackercup(stdin *fastio.Reader, stdout *fastio.Writer) {
 			input.Read(stdin)
 			debug.Go(func() {
 				start := time.Now()
-				outputs[i] = solve(&input)
+				outputs[i] = solve(int(i), &input)
 				testWGs[i].Done()
 				doneCnt := doneCounter.Add(1)
 				fmt.Fprintf(

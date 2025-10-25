@@ -8,6 +8,8 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -17,9 +19,8 @@ import (
 //file ..//go
 
 const (
-	fromFile   = false
-	inputFile  = "input.txt"
-	outputFile = "output.txt"
+	fromFile  = false
+	inputFile = "crash_course_input.txt"
 )
 
 func main() {
@@ -31,123 +32,60 @@ func main() {
 	}
 
 	if fromFile {
+		outputFile, err := os.Create("io/output" + inputFile)
+		if err != nil {
+			panic(err.Error())
+		}
+		stdout.File = outputFile
+
 		inputFile, err := os.Open("io/" + inputFile)
 		if err != nil {
 			panic(err.Error())
 		}
 		stdin.File = inputFile
-
-		outputFile, err := os.Create("io/" + outputFile)
-		if err != nil {
-			panic(err.Error())
-		}
-		stdout.File = outputFile
 	}
 	defer stdout.WriteAll()
 	defer Recover()
 
-	solveX(stdin, stdout)
-}
-
-//package main
-//file ..//solve_a.go
-
-// var solveX = solveA
-
-func solveA(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	t := stdin.Int()
-	for range t {
-		solveTestA(stdin, stdout)
-	}
-}
-
-func solveTestA(
-	stdin *Reader,
-	stdout *Writer,
-) {
-
+	//Hackercup(stdin, stdout)
+	SolveX(stdin, stdout)
 }
 
 /*input
+6
+7
+ABBAAAB
 1
+A
+1
+B
 2
+AB
+6
+AAAAAA
+7
+BBBBBBA
+
 */
 
 /*output
-
- */
-//package main
-//file ..//solve_b.go
-
-//var solveX = solveB
-
-func solveB(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	t := stdin.Int()
-	for range t {
-		solveTestB(stdin, stdout)
-	}
-}
-
-func solveTestB(
-	stdin *Reader,
-	stdout *Writer,
-) {
-
-}
-
-/*input
-3
-3 5
-10101
-10100
-00101
-4 6
-011101
-010001
-100010
-101110
-5 5
-11100
-10110
-11111
-01101
-00111
-*/
-
-/*output
-6 6 6 9 9
-6 6 6 9 9
-0 0 9 9 9
-0 10 8 8 10 10
-0 10 8 8 10 10
-10 10 8 8 10 0
-10 10 8 8 10 0
-6 6 6 0 0
-6 6 4 4 0
-6 4 4 4 6
-0 4 4 6 6
-0 0 6 6 6
+Case #1: Alice
+Case #2: Alice
+Case #3: Bob
+Case #4: Bob
+Case #5: Alice
+Case #6: Alice
 
 */
 //package main
-//file ..//solve_c.go
+//file ..//solve_A.go
 
-var solveX = solveC
+var SolveX = SolveA
 
-func solveC(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	t := stdin.Int()
-	for range t {
-		solveTestC(stdin, stdout)
-	}
+type intHash int
+
+func (x intHash) Hash() uint64 {
+	return uint64(x)
 }
 
 type stValue struct {
@@ -171,22 +109,17 @@ func (top lazy) Push(existing *lazy) {
 	existing.addDP += top.addDP
 }
 
-type intHash int
-
-func (h intHash) Hash() uint64 {
-	return uint64(h)
-}
-
-func solveTestC(
+func SolveA(
 	stdin *Reader,
 	stdout *Writer,
 ) {
+
 	n := stdin.Int()
 	a := NewHashTable[int, intHash, int](0)
 	for i := range n {
 		a.Set(i, stdin.Int())
 	}
-	st := NewSegmentTree(
+	st := NewSegmentTree[stValue, lazy](
 		func(i int) stValue {
 			return stValue{
 				minA:  a.Get(i),
@@ -195,8 +128,7 @@ func solveTestC(
 		},
 		n,
 		stValue{
-			minA:  math.MaxInt,
-			minDP: math.MaxInt,
+			minA: math.MaxInt,
 		},
 		lazy{},
 	)
@@ -224,546 +156,6 @@ func solveTestC(
 		})
 	}
 	stdout.Int(dp.Get(n-1), '\n')
-}
-
-/*input
-4
-5
-3 1 4 1 5
-10
-9 2 6 5 3 5 8 9 7 9
-8
-1 2 3 4 5 6 7 8
-2
-1 1000000000000000000
-
-*/
-
-/*output
-2
-4
-5
-2
-
-*/
-//package main
-//file ..//solve_d.go
-
-const (
-	mod = 1000000007
-)
-
-//var solveX = solveD
-
-func solveD(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	t := stdin.Int()
-	for range t {
-		solveTestD(stdin, stdout)
-	}
-}
-
-func solveTestD(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	n := stdin.Int()
-	a := stdin.Ints(n+1, 0)
-	answer := count(n, a)
-	a[n] = 0
-	answer -= count(n, a)
-	answer += mod
-	answer %= mod
-	stdout.Int(answer, '\n')
-}
-
-func count(n int, a []int) int {
-	for i := range n + 1 {
-		if a[i] < -1 || a[i] > n {
-			return 0
-		}
-	}
-	cnt := make([]int, n+1)
-	for i := range n + 1 {
-		if a[i] != -1 {
-			cnt[a[i]]++
-		}
-	}
-	for i := 1; i <= n; i++ {
-		if cnt[i] >= 2 {
-			return 0
-		}
-	}
-	for i := 1; i <= n; i++ {
-		if cnt[i] != 0 && a[i] == 0 {
-			return 0
-		}
-	}
-	c := 0
-	for i := 1; i <= n; i++ {
-		if cnt[i] == 0 {
-			c++
-		}
-	}
-	ret := 1
-	for i := 1; i <= c+1; i++ {
-		ret *= i
-		ret %= mod
-	}
-	return ret
-}
-
-/*input
-6
-1
--1 -1
-2
--1 2 -1
-2
--1 -1 -1
-3
--1 -1 3 -1
-3
--1 2 3 -1
-5
--1 -1 -1 1 0 -1
-
-*/
-
-/*output
-1
-1
-3
-2
-0
-3
-
-*/
-//package main
-//file ..//solve_e.go
-
-// var solveX = solveE
-
-func solveE(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	t := stdin.Int()
-	for range t {
-		solveTestE(stdin, stdout)
-	}
-}
-
-func solveTestE(
-	stdin *Reader,
-	stdout *Writer,
-) {
-
-}
-
-/*input
-
- */
-
-/*output
-
- */
-//package main
-//file ..//solve_f.go
-
-// var solveX = solveF
-
-func solveF(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	t := stdin.Int()
-	for range t {
-		solveTestF(stdin, stdout)
-	}
-}
-
-func solveTestF(
-	stdin *Reader,
-	stdout *Writer,
-) {
-
-}
-
-/*input
-1
-3 15
-4 2 5
-1 9 3
-7 6 8
-
-4
-
-1
-
-9
-
-6
-
-8
-
-4
-
-4
-
-7
-
-7
-
-8
-
-5
-
-4
-
-9
-
-9
-
-9
-
-
-*/
-
-/*output
-
-
-
-
-
-? 1 1
-
-? 1 2
-
-? 1 3
-
-? 1 4
-
-? 1 5
-
-? 2 1
-
-? 2 2
-
-? 2 3
-
-? 2 4
-
-? 2 5
-
-? 3 1
-
-? 3 2
-
-? 3 3
-
-? 3 4
-
-? 3 5
-
-! 1 4 4 4 4 5 6 7 7 8 8 9 9 9 9
-
-*/
-//package main
-//file ..//solve_g.go
-
-// var solveX = solveG
-
-func solveG(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	t := stdin.Int()
-	for range t {
-		solveTestG(stdin, stdout)
-	}
-}
-
-func solveTestG(
-	stdin *Reader,
-	stdout *Writer,
-) {
-
-}
-
-/*input
-
- */
-
-/*output
-
- */
-//package hash_map
-//file ..//hash_map/go
-
-const (
-	maxOffset      = 8
-	checkHashFirst = false
-)
-
-type hashTableEntry[K comparable, V any] struct {
-	hash  uint64
-	key   K
-	value V
-}
-
-type Hasher interface {
-	Hash() uint64
-}
-
-type HashTable[K comparable, H Hasher, V any] struct {
-	entries1 []hashTableEntry[K, V]
-	entries2 [][]hashTableEntry[K, V]
-	log2Size int
-	oddSalt1 uint64
-	oddSalt2 uint64
-	count    int
-}
-
-func NewHashTable[K comparable, H Hasher, V any](
-	size int,
-) *HashTable[K, H, V] {
-	log2Size := LogCeil(size*2 + 1)
-	return &HashTable[K, H, V]{
-		entries1: make([]hashTableEntry[K, V], (1<<log2Size)+maxOffset),
-		entries2: make([][]hashTableEntry[K, V], 1<<log2Size),
-		log2Size: log2Size,
-		oddSalt1: rand.Uint64() | 1,
-		oddSalt2: rand.Uint64() | 1,
-		count:    0,
-	}
-}
-
-func (hm *HashTable[K, H, V]) hash(key K) uint64 {
-	val := (*(*H)(unsafe.Pointer(&key))).Hash()
-	if val == 0 {
-		return 1
-	} else {
-		return val
-	}
-}
-
-func (hm *HashTable[K, H, V]) index1(hash uint64) uint64 {
-	hash *= hm.oddSalt1
-	hash = ReverseBits64(hash)
-	return hash & (1<<hm.log2Size - 1)
-}
-
-func (hm *HashTable[K, H, V]) index2(hash uint64) uint64 {
-	hash *= hm.oddSalt2
-	hash = ReverseBits64(hash)
-	return hash & (1<<hm.log2Size - 1)
-}
-
-func (hm *HashTable[K, H, V]) Get(key K) V {
-	val, ok := hm.Get2(key)
-	if !ok {
-		var zero V
-		return zero
-	}
-	return val
-}
-
-func (hm *HashTable[K, H, V]) Get2(key K) (V, bool) {
-	hash := hm.hash(key)
-	index1 := hm.index1(hash)
-	arr := GetArr(hm.entries1, int(index1))
-	var zero V
-	for _, val := range arr {
-		if val.hash == 0 {
-			return zero, false
-		}
-		if (!checkHashFirst || val.hash == hash) && val.key == key {
-			return val.value, true
-		}
-	}
-	index2 := hm.index2(hash)
-	for _, val := range *Get(hm.entries2, int(index2)) {
-		if (!checkHashFirst || val.hash == hash) && val.key == key {
-			return val.value, true
-		}
-	}
-	return zero, false
-}
-
-func (hm *HashTable[K, H, V]) Delete(key K) bool {
-	hash := hm.hash(key)
-	index1 := hm.index1(hash)
-	arr := GetArr(hm.entries1, int(index1))
-	for i := range maxOffset {
-		e := &arr[i]
-		if e.hash == 0 {
-			return false
-		}
-		if (!checkHashFirst || e.hash == hash) && e.key == key {
-			e.hash = 0
-			hm.count--
-			return true
-		}
-	}
-	index2 := hm.index2(hash)
-	slice := *Get(hm.entries2, int(index2))
-	for i := range slice {
-		val := &slice[i]
-		if (!checkHashFirst || val.hash == hash) && val.key == key {
-			*val = *Get(slice, len(slice)-1)
-			slice = slice[:len(slice)-1]
-			*Get(hm.entries2, int(index2)) = slice
-			hm.count--
-			return true
-		}
-	}
-	return false
-}
-
-func (hm *HashTable[K, H, V]) Set(key K, value V) {
-	if hm.count*2 >= (1 << hm.log2Size) {
-		hm.resize()
-	}
-	hash := hm.hash(key)
-	index1 := hm.index1(hash)
-	arr := GetArr(hm.entries1, int(index1))
-	for i := range maxOffset {
-		e := &arr[i]
-		if e.hash == 0 {
-			*e = hashTableEntry[K, V]{
-				hash:  hash,
-				key:   key,
-				value: value,
-			}
-			hm.count++
-			return
-		} else if (!checkHashFirst || e.hash == hash) && e.key == key {
-			e.value = value
-			return
-		}
-	}
-	index2 := hm.index2(hash)
-	entries := Get(hm.entries2, int(index2))
-	for i, val := range *entries {
-		if val.hash == hash && val.key == key {
-			Get(*entries, i).value = value
-			return
-		}
-	}
-	*entries = append(*entries, hashTableEntry[K, V]{
-		hash:  hash,
-		key:   key,
-		value: value,
-	})
-	hm.count++
-}
-
-func (hm *HashTable[K, H, V]) resize() {
-	hm.log2Size++
-	newEntries1 := make([]hashTableEntry[K, V], (1<<hm.log2Size)+maxOffset)
-	newEntries2 := make([][]hashTableEntry[K, V], 1<<hm.log2Size)
-	add := func(e hashTableEntry[K, V]) {
-		hash := hm.hash(e.key)
-		index1 := hm.index1(hash)
-		arr := GetArr(newEntries1, int(index1))
-		for j := range arr {
-			if arr[j].hash == 0 {
-				arr[j] = e
-				return
-			}
-		}
-		index2 := hm.index2(hash)
-		entries := Get(newEntries2, int(index2))
-		*entries = append(*entries, e)
-	}
-	for _, e := range hm.entries1 {
-		if e.hash == 0 {
-			continue
-		}
-		add(e)
-	}
-	for _, bucket := range hm.entries2 {
-		for _, e := range bucket {
-			add(e)
-		}
-	}
-	hm.entries1 = newEntries1
-	hm.entries2 = newEntries2
-}
-
-//package hash_map
-//file ..//hash_map/hash_map_test.go
-
-type intHasher int
-
-func (x intHasher) Hash() uint64 {
-	return uint64(x)
-}
-
-func BenchmarkHashMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = rand.Int()
-	}
-	b.ResetTimer()
-	hashMap := NewHashTable[int, intHasher, int](b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				hashMap.Set(a, a)
-			} else {
-				hashMap.Get(a)
-			}
-		}
-	}
-}
-
-func BenchmarkBuiltinMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = i*37 + 17
-	}
-	b.ResetTimer()
-	m := make(map[int]int, b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				m[a] = a
-			} else {
-				_ = m[a]
-			}
-		}
-	}
-}
-
-//package debug
-//file ..//debug/go
-
-func Recover() {
-	err := recover()
-	if err == nil {
-		return
-	}
-	defer os.Exit(13)
-
-	buf := make([]byte, 10000)
-	n := runtime.Stack(buf, false)
-	buf = buf[:n]
-	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
-}
-
-func PrintSeconds() {
-	start := time.Now()
-	ticker := time.NewTicker(time.Second * 10)
-	go func() {
-		defer Recover()
-		for range ticker.C {
-			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
-		}
-	}()
 }
 
 //package fastio
@@ -1095,7 +487,7 @@ func (w *Writer) Uint(n uint, c byte) {
 	w.bytes(w.intBuffer[i+1:])
 }
 
-func (w *Writer) Fprintf(format string, a ...any) {
+func (w *Writer) Printf(format string, a ...any) {
 	w.String(fmt.Sprintf(format, a...))
 }
 
@@ -1174,7 +566,7 @@ func NewSegmentTree[
 	if size <= 0 {
 		panic("size must be positive")
 	}
-	log2n := LogCeil(size)
+	log2n := LogCeil(uint64(size))
 	n := 1 << log2n
 	arr := make([]segmentTreeNode[value, update], 2*n)
 	for i := range size {
@@ -1369,26 +761,499 @@ func (st SegmentTree[value, update]) rebuild(
 	}
 }
 
+//package hackercup
+//file ..//hackercup/go
+
+func Hackercup(
+	stdin *Reader,
+	stdout *Writer,
+) {
+	start := time.Now()
+	defer Recover()
+	defer func() {
+		stdout.WriteAll()
+		time.Sleep(time.Millisecond)
+		fmt.Fprintf(os.Stderr, "done! took %s\n", time.Since(start))
+	}()
+
+	PrintSeconds()
+	tests := stdin.Uint()
+	outputs := make([]output, tests)
+	testWGs := make([]sync.WaitGroup, tests)
+
+	for i := range tests {
+		testWGs[i].Add(1)
+	}
+
+	doneCounter := atomic.Uint64{}
+	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
+	Go(func() {
+		for i := range tests {
+			input := input{}
+			input.Read(stdin)
+			Go(func() {
+				start := time.Now()
+				outputs[i] = solve(int(i), &input)
+				testWGs[i].Done()
+				doneCnt := doneCounter.Add(1)
+				fmt.Fprintf(
+					os.Stderr,
+					"test %d (%d/%d) took %s\n",
+					i+1,
+					doneCnt,
+					tests,
+					time.Since(start),
+				)
+			})
+		}
+	})
+
+	for i := range tests {
+		testWGs[i].Wait()
+		stdout.Printf("Case #%d: ", i+1)
+		outputs[i].Print(stdout)
+	}
+}
+
+//package hackercup
+//file ..//hackercup/io.go
+
+type input struct {
+	N int
+	S string
+}
+
+func (input *input) Read(stdin *Reader) {
+	input.N = stdin.Int()
+	input.S = stdin.String()
+}
+
+type output struct {
+	alice bool
+}
+
+func (output *output) Print(stdout *Writer) {
+	if output.alice {
+		stdout.String("Alice\n")
+	} else {
+		stdout.String("Bob\n")
+	}
+}
+
+//package hackercup
+//file ..//hackercup/solve.go
+
+func solve(test int, input *input) output {
+	s := []byte("X" + input.S + "X")
+	N := input.N
+	al := make([]int, N+2)
+	br := make([]int, N+2)
+	queue := make([][]Pair[int, int], N+4)
+	for i := 0; i < N+2; i++ {
+		al[i] = 0
+		br[i] = N + 1
+		queue[i+1] = append(queue[i+1], Pair[int, int]{X: 0, Y: i})
+		queue[N+2-i] = append(queue[N+2-i], Pair[int, int]{X: 1, Y: i})
+	}
+	for i := 1; i <= N; i++ {
+		if s[i] == 'A' {
+			al[i] = i
+			queue[1] = append(queue[1], Pair[int, int]{X: 0, Y: i})
+		} else {
+			br[i] = i
+			queue[1] = append(queue[1], Pair[int, int]{X: 1, Y: i})
+		}
+	}
+	for dist := 1; dist <= N; dist++ {
+		for len(queue[dist]) > 0 {
+			el := queue[dist][0]
+			queue[dist] = queue[dist][1:]
+			if el.X == 0 {
+				r := el.Y
+				l := al[r]
+				if r-l+1 != dist {
+					continue
+				}
+				if r == N+1 {
+					continue
+				}
+				if s[r+1] == 'A' {
+					if al[r+1] < l {
+						al[r+1] = l
+						queue[dist+1] = append(queue[dist+1], Pair[int, int]{X: 0, Y: r + 1})
+					}
+				} else if l != r {
+					if br[l+1] > r+1 {
+						br[l+1] = r + 1
+						queue[dist] = append(queue[dist], Pair[int, int]{X: 1, Y: l + 1})
+					}
+				}
+			} else {
+				l := el.Y
+				r := br[l]
+				if r-l+1 != dist {
+					continue
+				}
+				if l == 0 {
+					continue
+				}
+				if s[l-1] == 'B' {
+					if br[l-1] > r {
+						br[l-1] = r
+						queue[dist+1] = append(queue[dist+1], Pair[int, int]{X: 1, Y: l - 1})
+					}
+				} else if l != r {
+					if al[r-1] < l-1 {
+						al[r-1] = l - 1
+						queue[dist] = append(queue[dist], Pair[int, int]{X: 0, Y: r - 1})
+					}
+				}
+			}
+		}
+	}
+
+	return output{
+		alice: al[N] >= 1,
+	}
+}
+
+func arit(a, b int) int {
+	avg2 := (a + b)
+	return (avg2 * (b - a + 1)) / 2
+}
+
+func matrixPower(m [][]int, p int) [][]int {
+	n := len(m)
+	ret := make([][]int, n)
+	for i := range n {
+		ret[i] = make([]int, n)
+		ret[i][i] = 1
+	}
+	for p != 0 {
+		if p%2 == 1 {
+			ret = matrixMultiply(ret, m)
+		}
+		m = matrixMultiply(m, m)
+		p /= 2
+	}
+	return ret
+}
+
+func matrixMultiply(a, b [][]int) [][]int {
+	n := len(a)
+	result := make([][]int, n)
+	for i := range n {
+		result[i] = make([]int, n)
+	}
+	for i := range n {
+		for j := range n {
+			if a[i][j] == 0 {
+				continue
+			}
+			for k := range n {
+				result[i][k] += a[i][j] * b[j][k]
+				if result[i][k] >= mod {
+					result[i][k] %= mod
+				}
+			}
+		}
+	}
+	return result
+}
+
+const mod = 1_000_000_007
+
+//package hash_map
+//file ..//hash_map/go
+
+const (
+	maxOffset      = 8
+	checkHashFirst = false
+)
+
+type hashTableEntry[K comparable, V any] struct {
+	hash  uint64
+	key   K
+	value V
+}
+
+type Hasher interface {
+	Hash() uint64
+}
+
+type HashTable[K comparable, H Hasher, V any] struct {
+	entries1 []hashTableEntry[K, V]
+	entries2 [][]hashTableEntry[K, V]
+	log2Size int
+	oddSalt1 uint64
+	oddSalt2 uint64
+	count    int
+}
+
+func NewHashTable[K comparable, H Hasher, V any](
+	size int,
+) *HashTable[K, H, V] {
+	log2Size := LogCeil(uint64(size*2 + 1))
+	return &HashTable[K, H, V]{
+		entries1: make([]hashTableEntry[K, V], (1<<log2Size)+maxOffset),
+		entries2: make([][]hashTableEntry[K, V], 1<<log2Size),
+		log2Size: log2Size,
+		oddSalt1: rand.Uint64() | 1,
+		oddSalt2: rand.Uint64() | 1,
+		count:    0,
+	}
+}
+
+func (hm *HashTable[K, H, V]) hash(key K) uint64 {
+	val := (*(*H)(unsafe.Pointer(&key))).Hash()
+	if val == 0 {
+		return 1
+	} else {
+		return val
+	}
+}
+
+func (hm *HashTable[K, H, V]) index1(hash uint64) uint64 {
+	hash *= hm.oddSalt1
+	hash = ReverseBits64(hash)
+	return hash & (1<<hm.log2Size - 1)
+}
+
+func (hm *HashTable[K, H, V]) index2(hash uint64) uint64 {
+	hash *= hm.oddSalt2
+	hash = ReverseBits64(hash)
+	return hash & (1<<hm.log2Size - 1)
+}
+
+func (hm *HashTable[K, H, V]) Get(key K) V {
+	val, ok := hm.Get2(key)
+	if !ok {
+		var zero V
+		return zero
+	}
+	return val
+}
+
+func (hm *HashTable[K, H, V]) Get2(key K) (V, bool) {
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := GetArr(hm.entries1, int(index1))
+	var zero V
+	for _, val := range arr {
+		if val.hash == 0 {
+			return zero, false
+		}
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			return val.value, true
+		}
+	}
+	index2 := hm.index2(hash)
+	for _, val := range *Get(hm.entries2, int(index2)) {
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			return val.value, true
+		}
+	}
+	return zero, false
+}
+
+func (hm *HashTable[K, H, V]) Delete(key K) bool {
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := GetArr(hm.entries1, int(index1))
+	for i := range maxOffset {
+		e := &arr[i]
+		if e.hash == 0 {
+			return false
+		}
+		if (!checkHashFirst || e.hash == hash) && e.key == key {
+			e.hash = 0
+			hm.count--
+			return true
+		}
+	}
+	index2 := hm.index2(hash)
+	slice := *Get(hm.entries2, int(index2))
+	for i := range slice {
+		val := &slice[i]
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			*val = *Get(slice, len(slice)-1)
+			slice = slice[:len(slice)-1]
+			*Get(hm.entries2, int(index2)) = slice
+			hm.count--
+			return true
+		}
+	}
+	return false
+}
+
+func (hm *HashTable[K, H, V]) Set(key K, value V) {
+	if hm.count*2 >= (1 << hm.log2Size) {
+		hm.resize()
+	}
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := GetArr(hm.entries1, int(index1))
+	for i := range maxOffset {
+		e := &arr[i]
+		if e.hash == 0 {
+			*e = hashTableEntry[K, V]{
+				hash:  hash,
+				key:   key,
+				value: value,
+			}
+			hm.count++
+			return
+		} else if (!checkHashFirst || e.hash == hash) && e.key == key {
+			e.value = value
+			return
+		}
+	}
+	index2 := hm.index2(hash)
+	entries := Get(hm.entries2, int(index2))
+	for i, val := range *entries {
+		if val.hash == hash && val.key == key {
+			Get(*entries, i).value = value
+			return
+		}
+	}
+	*entries = append(*entries, hashTableEntry[K, V]{
+		hash:  hash,
+		key:   key,
+		value: value,
+	})
+	hm.count++
+}
+
+func (hm *HashTable[K, H, V]) resize() {
+	hm.log2Size++
+	newEntries1 := make([]hashTableEntry[K, V], (1<<hm.log2Size)+maxOffset)
+	newEntries2 := make([][]hashTableEntry[K, V], 1<<hm.log2Size)
+	add := func(e hashTableEntry[K, V]) {
+		hash := hm.hash(e.key)
+		index1 := hm.index1(hash)
+		arr := GetArr(newEntries1, int(index1))
+		for j := range arr {
+			if arr[j].hash == 0 {
+				arr[j] = e
+				return
+			}
+		}
+		index2 := hm.index2(hash)
+		entries := Get(newEntries2, int(index2))
+		*entries = append(*entries, e)
+	}
+	for _, e := range hm.entries1 {
+		if e.hash == 0 {
+			continue
+		}
+		add(e)
+	}
+	for _, bucket := range hm.entries2 {
+		for _, e := range bucket {
+			add(e)
+		}
+	}
+	hm.entries1 = newEntries1
+	hm.entries2 = newEntries2
+}
+
+//package hash_map
+//file ..//hash_map/hash_map_test.go
+
+type intHasher int
+
+func (x intHasher) Hash() uint64 {
+	return uint64(x)
+}
+
+func BenchmarkHashMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = rand.Int()
+	}
+	b.ResetTimer()
+	hashMap := NewHashTable[int, intHasher, int](b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				hashMap.Set(a, a)
+			} else {
+				hashMap.Get(a)
+			}
+		}
+	}
+}
+
+func BenchmarkBuiltinMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = i*37 + 17
+	}
+	b.ResetTimer()
+	m := make(map[int]int, b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				m[a] = a
+			} else {
+				_ = m[a]
+			}
+		}
+	}
+}
+
+//package debug
+//file ..//debug/go
+
+func Go(fn func()) {
+	go func() {
+		defer Recover()
+		fn()
+	}()
+}
+
+func Recover() {
+	err := recover()
+	if err == nil {
+		return
+	}
+	defer os.Exit(13)
+
+	buf := make([]byte, 10000)
+	n := runtime.Stack(buf, false)
+	buf = buf[:n]
+	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
+}
+
+func PrintSeconds() {
+	start := time.Now()
+	ticker := time.NewTicker(time.Second * 10)
+	go func() {
+		defer Recover()
+		for range ticker.C {
+			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
+		}
+	}()
+}
+
 //package utils
 //file ..//utils/go
 
-func LogFloor[T int | uint64](x T) int {
-	x64 := uint64(x)
-	if x64 == 0 {
+func LogFloor(x uint64) int {
+	if x == 0 {
 		panic("Log2(0) is undefined")
 	}
-	return 63 - bits.LeadingZeros64(x64)
+	return 63 - bits.LeadingZeros64(x)
 }
 
-func LogCeil[T int | uint64](x T) int {
-	x64 := uint64(x)
-	if x64 == 0 {
+func LogCeil(x uint64) int {
+	if x == 0 {
 		panic("Log2(0) is undefined")
 	}
-	if x64 == 1 {
+	if x == 1 {
 		return 0
 	}
-	return 1 + LogFloor(x64-1)
+	return 1 + LogFloor(x-1)
 }
 
 func IsPowerOf2[T int | uint64](x T) bool {
@@ -1417,13 +1282,22 @@ func Transpose(X *[][]int) {
 	n := len(M)
 	m := len(M[0])
 	M2 := make([][]int, m)
-	for i := 0; i < m; i++ {
+	for i := range m {
 		M2[i] = make([]int, n)
-		for j := 0; j < n; j++ {
+		for j := range n {
 			M2[i][j] = M[j][i]
 		}
 	}
 	*X = M2
+}
+
+func TransposeSquare(X [][]int) {
+	n := len(X)
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			X[i][j], X[j][i] = X[j][i], X[i][j]
+		}
+	}
 }
 
 func CollectMap[X comparable](m map[X]struct{}) []X {
@@ -1460,5 +1334,17 @@ func Get[T any](slice []T, index int) *T {
 func GetArr[T any](slice []T, offset int) *[8]T {
 	data := unsafe.Add(unsafe.Pointer(unsafe.SliceData(slice)), uintptr(offset)*unsafe.Sizeof(*new(T)))
 	return (*[8]T)(data)
+}
+
+type Pair[X any, Y any] struct {
+	X X
+	Y Y
+}
+
+func Abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 

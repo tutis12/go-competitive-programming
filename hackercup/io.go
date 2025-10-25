@@ -6,16 +6,22 @@ import (
 
 type input struct {
 	N int
+	S string
 }
 
 func (input *input) Read(stdin *fastio.Reader) {
 	input.N = stdin.Int()
+	input.S = stdin.String()
 }
 
 type output struct {
-	N int
+	alice bool
 }
 
 func (output *output) Print(stdout *fastio.Writer) {
-	stdout.Int(output.N, '\n')
+	if output.alice {
+		stdout.String("Alice\n")
+	} else {
+		stdout.String("Bob\n")
+	}
 }

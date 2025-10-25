@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"main/generator/monomorphize"
 	"os"
 	"strings"
 	"testing"
@@ -149,7 +150,7 @@ func TestMergeEverything(*testing.T) {
 		debugFile1.Close()
 	}
 
-	src = RemoveGenerics(src)
+	src = monomorphize.Monomorphize(src)
 
 	// DEBUG: Save file after RemoveGenerics
 	os.MkdirAll("output/2", 0755)
