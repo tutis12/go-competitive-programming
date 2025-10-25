@@ -71,8 +71,7 @@ func main() {
 type LLG1SliceLLOfint struct {
 	Next  *LLG1SliceLLOfint
 	Value []LLG1int
-
-	Prev *LLG1SliceLLOfint
+	Prev  *LLG1SliceLLOfint
 }
 
 func (l *LLG1SliceLLOfint) Append(value []LLG1int) {

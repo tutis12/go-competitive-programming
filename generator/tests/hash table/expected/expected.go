@@ -197,9 +197,7 @@ func NewHashTableG1intG2intHashG3int(size int) *HashTableG1intG2intHashG3int {
 
 type HashTableG1intG2intHashG3int struct {
 	entries1 []hashTableEntryG1intG2int
-
 	entries2 [][]hashTableEntryG1intG2int
-
 	log2Size int
 	oddSalt1 uint64
 	oddSalt2 uint64
@@ -260,8 +258,9 @@ func (hm *HashTableG1intG2intHashG3int,
 ) hash(key int,
 
 ) uint64 {
-	val := (*(*intHash)(unsafe.Pointer(
-		&key))).Hash()
+	val :=
+		(*(*intHash)(unsafe.Pointer(
+			&key))).Hash()
 	if val == 0 {
 		return 1
 	} else {
@@ -289,10 +288,10 @@ func (hm *HashTableG1intG2intHashG3int,
 ) resize() {
 	hm.log2Size++
 	newEntries1 := make([]hashTableEntryG1intG2int, (1<<hm.log2Size)+maxOffset)
-	newEntries2 := make([][]hashTableEntryG1intG2int, 1<<hm.log2Size)
-	add := func(e hashTableEntryG1intG2int,
-
-	) {
+	newEntries2 := make([][]hashTableEntryG1intG2int,
+		1<<hm.log2Size,
+	)
+	add := func(e hashTableEntryG1intG2int) {
 		hash := hm.hash(e.key)
 		index1 := hm.index1(hash)
 		arr :=

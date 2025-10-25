@@ -10,7 +10,6 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
-	"main/debug"
 	"sort"
 	"strings"
 )
@@ -28,7 +27,6 @@ type instRecord struct {
 }
 
 // --- DROP-IN REPLACEMENT: Monomorphize with debug formatting on failure ---
-
 func Monomorphize(src []byte) []byte {
 	const maxIters = 2000 // hard stop to avoid accidental infinite loops
 
@@ -84,23 +82,21 @@ func Monomorphize(src []byte) []byte {
 		}
 		conf := &types.Config{
 			Importer: importer.Default(),
-			// Fail fast on any type error to preserve the "always compiles" invariant.
-			Error: func(err error) { panic(err) },
 		}
-
-		if err := debug.Try(func() {
-			if _, err := conf.Check(file.Name.Name, fset, []*ast.File{file}, info); err != nil {
-				debugTypecheckFailure(fset, file, err)
-				panic(err)
-			}
-		}); err != nil {
+		// Always print a highlighted snippet if go/types emits an error via callback.
+		conf.Error = func(e error) {
+			debugTypecheckFailure(fset, file, e)
+			panic(e)
+		}
+		// And also if Check returns an error.
+		if _, err := conf.Check(file.Name.Name, fset, []*ast.File{file}, info); err != nil {
 			debugTypecheckFailure(fset, file, err)
 			panic(err)
 		}
 
 		// ---- Hoist local (block-scoped) types to package scope first ----
 		if hoistLocalTypes(file, fset, info) {
-			// DEBUG-SAFE FORMAT: if formatting fails, print the offending line/col.
+			// If formatting fails, we print the offending line/col inside this helper.
 			src = formatToBytesOrDie(fset, file)
 			// restart iteration with fresh parse/type info
 			continue
@@ -271,9 +267,8 @@ func Monomorphize(src []byte) []byte {
 			// Rewrite usages for ALL known instantiations so nested ones get updated too
 			_ = rewriteInstantiations(file, created, callKeys)
 
-			// DEBUG-SAFE FORMAT: if formatting fails, print the offending line/col.
+			// Emit fresh source and restart the outer loop with a new parse/typecheck.
 			src = formatToBytesOrDie(fset, file)
-
 			madeChange = true
 			break // <-- enforce "one replacement per iteration"
 		}
@@ -807,41 +802,127 @@ func cloneFuncForConcrete(fd *ast.FuncDecl, newName string, subst map[string]ast
 	return clone
 }
 
-// applySubstToNode: replace type params (by name) with concrete type exprs in common *type positions*.
+// applySubstToNode walks nn and applies 'subst' where appropriate.
+// Important: we do NOT rewrite method callees like (update).ApplyUpdate(...).
 func applySubstToNode(n ast.Node, subst map[string]ast.Expr) {
-	ast.Inspect(n, func(nn ast.Node) bool {
-		switch x := nn.(type) {
+	if n == nil {
+		return
+	}
+
+	ast.Inspect(n, func(node ast.Node) bool {
+		switch x := node.(type) {
 		case *ast.Field:
-			if x.Type != nil {
-				x.Type = substInExpr(x.Type, subst)
-			}
+			x.Type = substInExpr(x.Type, subst)
+
 		case *ast.ValueSpec:
 			if x.Type != nil {
 				x.Type = substInExpr(x.Type, subst)
 			}
+			for i, v := range x.Values {
+				x.Values[i] = substInExpr(v, subst)
+			}
+
 		case *ast.TypeSpec:
-			if x.Type != nil {
-				x.Type = substInExpr(x.Type, subst)
+			x.Type = substInExpr(x.Type, subst)
+
+		case *ast.ReturnStmt:
+			for i, r := range x.Results {
+				x.Results[i] = substInExpr(r, subst)
 			}
+
+		case *ast.AssignStmt:
+			for i, r := range x.Rhs {
+				x.Rhs[i] = substInExpr(r, subst)
+			}
+
 		case *ast.CompositeLit:
-			if x.Type != nil {
-				x.Type = substInExpr(x.Type, subst)
+			// Also substitute inside the literal's type.
+			x.Type = substInExpr(x.Type, subst)
+			for i, e := range x.Elts {
+				x.Elts[i] = substInExpr(e, subst)
 			}
+
+		case *ast.UnaryExpr:
+			// Handle &T{...} and similar.
+			x.X = substInExpr(x.X, subst)
+
 		case *ast.CallExpr:
-			// Handle type conversions and builtins that take types.
-			x.Fun = substInExpr(x.Fun, subst)
-			if id, ok := x.Fun.(*ast.Ident); ok {
-				if id.Name == "make" || id.Name == "new" {
-					if len(x.Args) > 0 {
-						x.Args[0] = substInExpr(x.Args[0], subst)
-					}
-				}
+			// Do NOT rewrite method callees: foo.Bar(...) must remain untouched.
+			// Only rewrite the callee if it syntactically looks like a type expr
+			// (i.e., a conversion), e.g. (value)(x), (*value)(x), value(x).
+			if _, isSel := x.Fun.(*ast.SelectorExpr); !isSel && looksLikeTypeExpr(x.Fun) {
+				x.Fun = substInExpr(x.Fun, subst)
 			}
+			// Always rewrite arguments.
+			for i, a := range x.Args {
+				x.Args[i] = substInExpr(a, subst)
+			}
+
+		case *ast.IndexExpr:
+			x.X = substInExpr(x.X, subst)
+			x.Index = substInExpr(x.Index, subst)
+
+		case *ast.IndexListExpr:
+			x.X = substInExpr(x.X, subst)
+			for i, a := range x.Indices {
+				x.Indices[i] = substInExpr(a, subst)
+			}
+
+		case *ast.StarExpr:
+			x.X = substInExpr(x.X, subst)
+
+		case *ast.ParenExpr:
+			x.X = substInExpr(x.X, subst)
 		}
 		return true
 	})
 }
 
+// looksLikeTypeExpr reports whether e is syntactically a type expression
+// composed only of type-ish nodes (Ident, Selector over pkg Ident, Index, Star,
+// Paren, etc.). This lets us safely rewrite conversions like value(x) or
+// (*value)(x) without touching value-method calls like (update).ApplyUpdate.
+func looksLikeTypeExpr(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return true
+	case *ast.ParenExpr:
+		return looksLikeTypeExpr(t.X)
+	case *ast.StarExpr:
+		return looksLikeTypeExpr(t.X)
+	case *ast.ArrayType:
+		// Conversion callee is never an array type; keep false to be conservative.
+		return false
+	case *ast.ChanType, *ast.MapType, *ast.StructType, *ast.InterfaceType, *ast.FuncType:
+		// These can be types, but they don't occur as conversion callees in normal code.
+		// Keep false to avoid over-matching; extend if you really need them.
+		return false
+	case *ast.SelectorExpr:
+		// Qualifed type like pkg.Type or pkg.Generic[T]
+		// Only treat as type-ish if X itself is an Ident (a package name) or
+		// recursively type-ish (for nested pkg paths).
+		return looksLikeTypeExpr(t.X)
+	case *ast.IndexExpr:
+		return looksLikeTypeExpr(t.X) && looksLikeTypeExpr(t.Index)
+	case *ast.IndexListExpr:
+		if !looksLikeTypeExpr(t.X) {
+			return false
+		}
+		for _, a := range t.Indices {
+			if !looksLikeTypeExpr(a) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// substInExpr applies 'subst' to a type/value expression where safe.
+// Important: for SelectorExpr, if the left side is a type parameter name,
+// we do NOT rewrite it; otherwise (update).ApplyUpdate would become
+// (lazy).ApplyUpdate (incorrect).
 func substInExpr(e ast.Expr, subst map[string]ast.Expr) ast.Expr {
 	switch t := e.(type) {
 	case *ast.Ident:
@@ -849,57 +930,77 @@ func substInExpr(e ast.Expr, subst map[string]ast.Expr) ast.Expr {
 			return cloneExpr(repl)
 		}
 		return e
+
 	case *ast.ParenExpr:
-		// *** FIX: recurse into parenthesized type expressions (e.g., (*H)(x)) ***
-		return &ast.ParenExpr{X: substInExpr(t.X, subst)}
+		t.X = substInExpr(t.X, subst)
+		return t
+
 	case *ast.StarExpr:
-		return &ast.StarExpr{X: substInExpr(t.X, subst)}
+		t.X = substInExpr(t.X, subst)
+		return t
+
 	case *ast.ArrayType:
-		var ln ast.Expr
 		if t.Len != nil {
-			ln = t.Len
+			t.Len = substInExpr(t.Len, subst)
 		}
-		return &ast.ArrayType{Len: ln, Elt: substInExpr(t.Elt, subst)}
+		t.Elt = substInExpr(t.Elt, subst)
+		return t
+
 	case *ast.MapType:
-		return &ast.MapType{Key: substInExpr(t.Key, subst), Value: substInExpr(t.Value, subst)}
+		t.Key = substInExpr(t.Key, subst)
+		t.Value = substInExpr(t.Value, subst)
+		return t
+
 	case *ast.ChanType:
-		return &ast.ChanType{Dir: t.Dir, Value: substInExpr(t.Value, subst)}
+		t.Value = substInExpr(t.Value, subst)
+		return t
+
 	case *ast.SelectorExpr:
-		return &ast.SelectorExpr{X: substInExpr(t.X, subst), Sel: t.Sel}
-	case *ast.IndexExpr:
-		return &ast.IndexExpr{X: substInExpr(t.X, subst), Index: substInExpr(t.Index, subst)}
-	case *ast.IndexListExpr:
-		idxs := make([]ast.Expr, len(t.Indices))
-		for i, a := range t.Indices {
-			idxs[i] = substInExpr(a, subst)
+		// If the left side is exactly a type parameter identifier that appears
+		// in 'subst', treat it as a value receiver/expr and DO NOT rewrite it.
+		if id, ok := t.X.(*ast.Ident); ok {
+			if _, isTP := subst[id.Name]; isTP {
+				return t
+			}
 		}
-		return &ast.IndexListExpr{X: substInExpr(t.X, subst), Indices: idxs}
+		t.X = substInExpr(t.X, subst)
+		return t
+
+	case *ast.IndexExpr:
+		t.X = substInExpr(t.X, subst)
+		t.Index = substInExpr(t.Index, subst)
+		return t
+
+	case *ast.IndexListExpr:
+		t.X = substInExpr(t.X, subst)
+		for i, a := range t.Indices {
+			t.Indices[i] = substInExpr(a, subst)
+		}
+		return t
+
 	case *ast.StructType:
-		fs := &ast.FieldList{}
 		if t.Fields != nil {
 			for _, f := range t.Fields.List {
-				ff := *f
-				ff.Type = substInExpr(f.Type, subst)
-				fs.List = append(fs.List, &ff)
+				f.Type = substInExpr(f.Type, subst)
 			}
 		}
-		return &ast.StructType{Fields: fs, Incomplete: t.Incomplete}
+		return t
+
 	case *ast.InterfaceType:
-		ms := &ast.FieldList{}
 		if t.Methods != nil {
 			for _, f := range t.Methods.List {
-				ff := *f
 				if ft, ok := f.Type.(*ast.FuncType); ok {
-					ff.Type = substInFuncType(ft, subst)
+					f.Type = substInFuncType(ft, subst)
 				} else {
-					ff.Type = substInExpr(f.Type, subst)
+					f.Type = substInExpr(f.Type, subst)
 				}
-				ms.List = append(ms.List, &ff)
 			}
 		}
-		return &ast.InterfaceType{Methods: ms, Incomplete: t.Incomplete}
+		return t
+
 	case *ast.FuncType:
 		return substInFuncType(t, subst)
+
 	default:
 		return e
 	}
@@ -1534,11 +1635,11 @@ func debugTypecheckFailure(fset *token.FileSet, file *ast.File, err error) {
 		return
 	}
 
-	from := line - 3
+	from := line - 10
 	if from < 1 {
 		from = 1
 	}
-	to := line + 3
+	to := line + 10
 	if to > len(lines) {
 		to = len(lines)
 	}

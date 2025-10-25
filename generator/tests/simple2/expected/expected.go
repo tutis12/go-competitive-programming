@@ -29,9 +29,7 @@ func PrintSliceG1XOfXOfint(X []XG1XOfint) {
 		fmt.Println(X)
 	}
 }
-func PrintSliceG1XOfint(X []XG1int,
-
-) {
+func PrintSliceG1XOfint(X []XG1int) {
 	for _, X := range X {
 		fmt.Println(X)
 	}
