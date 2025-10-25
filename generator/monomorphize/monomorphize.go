@@ -10,6 +10,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"sort"
 	"strings"
 )
 
@@ -19,167 +20,199 @@ type instKey struct {
 	Args string
 }
 
-// Monomorphize takes a single-file Go program and returns a new source where
-// each used instantiation of generic types/functions is duplicated into a
-// concrete decl, and all corresponding uses are rewritten to the concrete names.
-// It does NOT delete or modify the original generic decls; it only appends new ones.
+// record for an instantiation we discovered
+type instRecord struct {
+	args     []ast.Expr   // cloned exprs used for naming/substitution
+	argTypes []types.Type // types for hoistability checks (nil => unknown => non-hoistable)
+}
+
+// MonomorphizeIterative does what Monomorphize does, but performs it in small
+// steps: on each iteration it materializes at most one instantiation and
+// rewrites its callsites/usages, then regenerates the source and reparses it.
+// This favors correctness over speed on small binaries.
 func Monomorphize(src []byte) []byte {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "input.go", src, parser.ParseComments)
-	if err != nil {
-		panic(err)
-	}
+	const maxIters = 2000 // hard stop to avoid accidental infinite loops
 
-	// Index generic decls by base name.
-	genTypes := map[string]*ast.TypeSpec{}        // name -> TypeSpec (with TypeParams)
-	genFuncs := map[string]*ast.FuncDecl{}        // name -> FuncDecl (with TypeParams)
-	methodsByRecv := map[string][]*ast.FuncDecl{} // generic type name -> methods declared on it
+	// We keep track of which instantiations we already created across iterations.
+	// Persisting this map avoids re-creating the same concrete decl when we reparse.
+	created := map[instKey]string{}
 
-	for _, d := range file.Decls {
-		switch dd := d.(type) {
-		case *ast.GenDecl:
-			if dd.Tok == token.TYPE {
-				for _, spec := range dd.Specs {
-					ts := spec.(*ast.TypeSpec)
-					if ts.TypeParams != nil && len(ts.TypeParams.List) > 0 {
-						genTypes[ts.Name.Name] = ts
+	for iter := 0; iter < maxIters; iter++ {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "input.go", src, parser.ParseComments)
+		if err != nil {
+			panic(err)
+		}
+
+		// Index generic decls / methods (same as your eager version)
+		genTypes := map[string]*ast.TypeSpec{}
+		genFuncs := map[string]*ast.FuncDecl{}
+		methodsByRecv := map[string][]*ast.FuncDecl{}
+		for _, d := range file.Decls {
+			switch dd := d.(type) {
+			case *ast.GenDecl:
+				if dd.Tok == token.TYPE {
+					for _, spec := range dd.Specs {
+						ts := spec.(*ast.TypeSpec)
+						if ts.TypeParams != nil && len(ts.TypeParams.List) > 0 {
+							genTypes[ts.Name.Name] = ts
+						}
 					}
 				}
-			}
-		case *ast.FuncDecl:
-			// Generic free functions
-			if dd.Type != nil && dd.Type.TypeParams != nil && len(dd.Type.TypeParams.List) > 0 && dd.Name != nil {
-				genFuncs[dd.Name.Name] = dd
-			}
-			// Methods on generic receiver types
-			if dd.Recv != nil && len(dd.Recv.List) == 1 {
-				base, _ := baseIdentOfReceiver(dd.Recv.List[0].Type)
-				if base != "" {
-					if _, ok := genTypes[base]; ok {
-						methodsByRecv[base] = append(methodsByRecv[base], dd)
+			case *ast.FuncDecl:
+				if dd.Type != nil && dd.Type.TypeParams != nil && len(dd.Type.TypeParams.List) > 0 && dd.Name != nil {
+					genFuncs[dd.Name.Name] = dd
+				}
+				if dd.Recv != nil && len(dd.Recv.List) == 1 {
+					base, _ := baseIdentOfReceiver(dd.Recv.List[0].Type)
+					if base != "" {
+						if _, ok := genTypes[base]; ok {
+							methodsByRecv[base] = append(methodsByRecv[base], dd)
+						}
 					}
 				}
 			}
 		}
-	}
 
-	// --- Type-check to get inferred type arguments on calls like PrintSlice(s) ---
-	info := &types.Info{
-		Types:      make(map[ast.Expr]types.TypeAndValue),
-		Defs:       make(map[*ast.Ident]types.Object),
-		Uses:       make(map[*ast.Ident]types.Object),
-		Instances:  make(map[*ast.Ident]types.Instance),
-		Selections: make(map[*ast.SelectorExpr]*types.Selection),
-		Implicits:  make(map[ast.Node]types.Object),
-	}
-	conf := &types.Config{
-		Importer: importer.Default(),
-		Error:    func(err error) { panic(err) }, // per your "panic for errors" request
-	}
-	if _, err := conf.Check(file.Name.Name, fset, []*ast.File{file}, info); err != nil {
-		panic(err)
-	}
+		// Type-check current file
+		info := &types.Info{
+			Types:      make(map[ast.Expr]types.TypeAndValue),
+			Defs:       make(map[*ast.Ident]types.Object),
+			Uses:       make(map[*ast.Ident]types.Object),
+			Instances:  make(map[*ast.Ident]types.Instance),
+			Selections: make(map[*ast.SelectorExpr]*types.Selection),
+			Implicits:  make(map[ast.Node]types.Object),
+		}
+		conf := &types.Config{
+			Importer: importer.Default(),
+			Error:    func(err error) { panic(err) },
+		}
+		if _, err := conf.Check(file.Name.Name, fset, []*ast.File{file}, info); err != nil {
+			panic(err)
+		}
 
-	// Collect all instantiations found in the file.
-	insts := map[instKey][]ast.Expr{}       // key -> ast.Expr type args
-	callKeys := map[*ast.CallExpr]instKey{} // calls with inferred args -> key
-	collectInstantiations := func(n ast.Node) {
-		ast.Inspect(n, func(n ast.Node) bool {
-			switch ix := n.(type) {
-			case *ast.IndexListExpr: // explicit multi-arg instantiation
-				switch base := ix.X.(type) {
-				case *ast.Ident:
-					name := base.Name
-					if _, isGenType := genTypes[name]; isGenType {
-						k := instKey{Name: name, Args: argsKey(ix.Indices)}
-						insts[k] = cloneExprList(ix.Indices)
+		// Discover instantiations in this iteration
+		insts := map[instKey]instRecord{}
+		callKeys := map[*ast.CallExpr]instKey{}
+		collect := func(n ast.Node) {
+			ast.Inspect(n, func(n ast.Node) bool {
+				switch ix := n.(type) {
+				case *ast.IndexListExpr:
+					var baseName string
+					switch b := ix.X.(type) {
+					case *ast.Ident:
+						baseName = b.Name
+					case *ast.SelectorExpr:
+						baseName = b.Sel.Name
 					}
-					if _, isGenFunc := genFuncs[name]; isGenFunc {
-						k := instKey{Name: name, Args: argsKey(ix.Indices)}
-						insts[k] = cloneExprList(ix.Indices)
-					}
-				case *ast.SelectorExpr:
-					// pkg.X[...]
-					name := base.Sel.Name
-					if _, isGenType := genTypes[name]; isGenType {
-						k := instKey{Name: name, Args: argsKey(ix.Indices)}
-						insts[k] = cloneExprList(ix.Indices)
-					}
-					if _, isGenFunc := genFuncs[name]; isGenFunc {
-						k := instKey{Name: name, Args: argsKey(ix.Indices)}
-						insts[k] = cloneExprList(ix.Indices)
-					}
-				}
-			case *ast.IndexExpr: // explicit single-arg instantiation
-				switch base := ix.X.(type) {
-				case *ast.Ident:
-					name := base.Name
-					args := []ast.Expr{ix.Index}
-					if _, isGenType := genTypes[name]; isGenType {
-						k := instKey{Name: name, Args: argsKey(args)}
-						insts[k] = cloneExprList(args)
-					}
-					if _, isGenFunc := genFuncs[name]; isGenFunc {
-						k := instKey{Name: name, Args: argsKey(args)}
-						insts[k] = cloneExprList(args)
-					}
-				case *ast.SelectorExpr:
-					// pkg.X[T]
-					name := base.Sel.Name
-					args := []ast.Expr{ix.Index}
-					if _, isGenType := genTypes[name]; isGenType {
-						k := instKey{Name: name, Args: argsKey(args)}
-						insts[k] = cloneExprList(args)
-					}
-					if _, isGenFunc := genFuncs[name]; isGenFunc {
-						k := instKey{Name: name, Args: argsKey(args)}
-						insts[k] = cloneExprList(args)
-					}
-				}
-			case *ast.CallExpr: // inferred instantiation for generic funcs
-				if id, ok := ix.Fun.(*ast.Ident); ok {
-					// If checker instantiated the generic (with inference), info.Instances holds it for this ident.
-					if inst, ok := info.Instances[id]; ok && inst.TypeArgs.Len() > 0 {
-						// Use the original generic base name from type info (id.Name may be mutated later).
-						var baseName string
-						if obj := info.Uses[id]; obj != nil {
-							baseName = obj.Name() // e.g. "PrintSlice"
-						} else {
-							baseName = id.Name
-						}
-						// Only if that base is a generic function we own.
-						if _, isGen := genFuncs[baseName]; isGen {
-							var args []ast.Expr
-							for i := 0; i < inst.TypeArgs.Len(); i++ {
-								args = append(args, typeToExprWithFile(file, inst.TypeArgs.At(i)))
+					if baseName != "" && (genTypes[baseName] != nil || genFuncs[baseName] != nil) {
+						k := instKey{Name: baseName, Args: argsKey(ix.Indices)}
+						var ts []types.Type
+						for _, a := range ix.Indices {
+							if tv, ok := info.Types[a]; ok && tv.Type != nil {
+								ts = append(ts, tv.Type)
+								continue
 							}
-							k := instKey{Name: baseName, Args: argsKey(args)}
-							insts[k] = cloneExprList(args)
-							callKeys[ix] = k
+							if id, ok := a.(*ast.Ident); ok {
+								if pt := predeclTypeByName(id.Name); pt != nil {
+									ts = append(ts, pt)
+									continue
+								}
+							}
+							ts = append(ts, nil)
+						}
+						insts[k] = instRecord{args: cloneExprList(ix.Indices), argTypes: ts}
+					}
+				case *ast.IndexExpr:
+					var baseName string
+					switch b := ix.X.(type) {
+					case *ast.Ident:
+						baseName = b.Name
+					case *ast.SelectorExpr:
+						baseName = b.Sel.Name
+					}
+					if baseName != "" && (genTypes[baseName] != nil || genFuncs[baseName] != nil) {
+						k := instKey{Name: baseName, Args: argsKey([]ast.Expr{ix.Index})}
+						var targ types.Type
+						if tv, ok := info.Types[ix.Index]; ok && tv.Type != nil {
+							targ = tv.Type
+						} else if id, ok := ix.Index.(*ast.Ident); ok {
+							if pt := predeclTypeByName(id.Name); pt != nil {
+								targ = pt
+							}
+						}
+						insts[k] = instRecord{args: []ast.Expr{cloneExpr(ix.Index)}, argTypes: []types.Type{targ}}
+					}
+				case *ast.CallExpr:
+					if id, ok := ix.Fun.(*ast.Ident); ok {
+						if inst, ok := info.Instances[id]; ok && inst.TypeArgs.Len() > 0 {
+							var baseName string
+							if obj := info.Uses[id]; obj != nil {
+								baseName = obj.Name()
+							} else {
+								baseName = id.Name
+							}
+							if _, isGen := genFuncs[baseName]; isGen {
+								var exprArgs []ast.Expr
+								var typeArgs []types.Type
+								for i := 0; i < inst.TypeArgs.Len(); i++ {
+									ta := inst.TypeArgs.At(i)
+									typeArgs = append(typeArgs, ta)
+									exprArgs = append(exprArgs, typeToExprWithFile(file, ta))
+								}
+								k := instKey{Name: baseName, Args: argsKey(exprArgs)}
+								insts[k] = instRecord{args: cloneExprList(exprArgs), argTypes: typeArgs}
+								callKeys[ix] = k
+							}
 						}
 					}
 				}
+				return true
+			})
+		}
+		collect(file)
+
+		// Build a deterministic list, then pick ONE instantiation to materialize.
+		type instEntry struct {
+			key      instKey
+			args     []ast.Expr
+			argTypes []types.Type
+		}
+		entries := make([]instEntry, 0, len(insts))
+		for k, rec := range insts {
+			entries = append(entries, instEntry{key: k, args: rec.args, argTypes: rec.argTypes})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].key.Name != entries[j].key.Name {
+				return entries[i].key.Name < entries[j].key.Name
 			}
-			return true
+			return entries[i].key.Args < entries[j].key.Args
 		})
-	}
-	collectInstantiations(file)
 
-	// Generate concrete decls for each instantiation and rewrite callsites/usages.
-	created := map[instKey]string{} // key -> new concrete name
-	passLimit := 4
-	for pass := 0; pass < passLimit; pass++ {
-		changed := false
+		madeChange := false
 
-		// 1) Create concrete decls for any instantiation with no concrete decl yet.
-		for k, args := range insts {
+		// Choose the first hoistable, not-yet-created instantiation
+		for _, e := range entries {
+			k, args, argTypes := e.key, e.args, e.argTypes
 			if _, done := created[k]; done {
 				continue
 			}
+			// hoistability check
+			hoistOK := true
+			for _, t := range argTypes {
+				if t == nil || !isHoistableType(t) {
+					hoistOK = false
+					break
+				}
+			}
+			if !hoistOK {
+				continue
+			}
+
 			concreteName := makeMonoName(k.Name, args)
 			created[k] = concreteName
 
-			// Build subst map: TParamName -> ast.Expr
+			// Materialize exactly one concrete decl (and its methods if type)
 			switch {
 			case genTypes[k.Name] != nil:
 				ts := genTypes[k.Name]
@@ -192,83 +225,86 @@ func Monomorphize(src []byte) []byte {
 					subst[p] = cloneExpr(args[i])
 				}
 
-				// Clone original type spec into a new decl, substitute, strip type params, rename.
 				newDecl := cloneTypeDecl(ts, concreteName, subst)
 				appendDecl(file, newDecl)
 
-				// Clone methods for this concrete receiver.
-				for _, m := range methodsByRecv[k.Name] {
+				recvMethods := append([]*ast.FuncDecl(nil), methodsByRecv[k.Name]...)
+				sort.SliceStable(recvMethods, func(i, j int) bool {
+					return fset.Position(recvMethods[i].Pos()).Offset < fset.Position(recvMethods[j].Pos()).Offset
+				})
+				for _, m := range recvMethods {
 					newM := cloneMethodForConcrete(m, k.Name, concreteName, subst)
 					appendDecl(file, newM)
 				}
 
 			default:
-				// Generic function (with possible inference)
 				fd := getFuncDecl(file, genFuncs, k.Name)
-				if fd == nil || fd.Type == nil {
-					// No decl found (external/builtin); skip generating.
-					continue
+				if fd != nil && fd.Type != nil {
+					params := flattenFieldListIdents(fd.Type.TypeParams)
+					if len(params) != len(args) {
+						panic(fmt.Errorf("func %s: expected %d type args, got %d", k.Name, len(params), len(args)))
+					}
+					subst := map[string]ast.Expr{}
+					for i, p := range params {
+						subst[p] = cloneExpr(args[i])
+					}
+					newFunc := cloneFuncForConcrete(fd, concreteName, subst)
+					appendDecl(file, newFunc)
 				}
-				params := flattenFieldListIdents(fd.Type.TypeParams)
-				if len(params) != len(args) {
-					panic(fmt.Errorf("func %s: expected %d type args, got %d", k.Name, len(params), len(args)))
-				}
-				subst := map[string]ast.Expr{}
-				for i, p := range params {
-					subst[p] = cloneExpr(args[i])
-				}
-				newFunc := cloneFuncForConcrete(fd, concreteName, subst)
-				appendDecl(file, newFunc)
 			}
 
-			changed = true
+			// Rewrite usages for THIS instantiation only
+			toRewrite := map[instKey]string{k: concreteName}
+			rewritten := rewriteInstantiations(file, toRewrite, callKeys)
+			_ = rewritten // we expect it to be true in practice
+
+			// Emit fresh source and restart the outer loop with a new parse/typecheck.
+			var out bytes.Buffer
+			if err := format.Node(&out, fset, file); err != nil {
+				panic(err)
+			}
+			src = out.Bytes()
+			madeChange = true
+			break // <-- enforce "one replacement per iteration"
 		}
 
-		// 2) Rewrite all instantiation usages:
-		//    - Foo[Point,int]  -> FooG1PointG2int
-		//    - PrintSlice(x)   -> PrintSliceG1int(x)   (when inferred TArgs tell us so)
-		rewritten := rewriteInstantiations(file, created, callKeys)
-		if rewritten {
-			changed = true
-		}
-
-		if !changed {
-			break
-		}
-
-		// 3) Re-scan to see if any remaining/recursive instantiations exist after additions.
-		insts = map[instKey][]ast.Expr{}
-		callKeys = map[*ast.CallExpr]instKey{} // reset to avoid stale mappings pointing at mutated id.Name
-		collectInstantiations(file)
-		for k := range created {
-			// don't regenerate already done ones
-			delete(insts, k)
+		if !madeChange {
+			// Nothing left to do in this iteration => done.
+			return src
 		}
 	}
 
-	var out bytes.Buffer
-	if err := format.Node(&out, fset, file); err != nil {
-		panic(err)
-	}
-	return out.Bytes()
+	panic("MonomorphizeIterative: exceeded iteration limit; possible cycle or non-hoistable only")
 }
 
 // ---- helpers ----
 
 func appendDecl(file *ast.File, d ast.Decl) { file.Decls = append(file.Decls, d) }
 
+// Improved: supports X, *X, X[T], *X[T], X[T,U], *X[T,U], with extra parens tolerated.
 func baseIdentOfReceiver(recvType ast.Expr) (string, bool) {
+	// Strip pointer layers
 	t := recvType
-	if se, ok := t.(*ast.StarExpr); ok {
-		t = se.X
+	for {
+		if se, ok := t.(*ast.StarExpr); ok {
+			t = se.X
+			continue
+		}
+		break
 	}
 	switch rr := t.(type) {
 	case *ast.Ident:
 		return rr.Name, true
+	case *ast.IndexExpr:
+		if id, ok := rr.X.(*ast.Ident); ok {
+			return id.Name, true
+		}
 	case *ast.IndexListExpr:
 		if id, ok := rr.X.(*ast.Ident); ok {
 			return id.Name, true
 		}
+	case *ast.ParenExpr:
+		return baseIdentOfReceiver(rr.X)
 	}
 	return "", false
 }
@@ -470,9 +506,15 @@ func cloneFuncForConcrete(fd *ast.FuncDecl, newName string, subst map[string]ast
 }
 
 // applySubstToNode replaces identifiers that match any key in subst with the
-// corresponding concrete type expression, ONLY when the identifier appears in a
-// type position (we approximate this by replacing idents in type syntax trees,
-// signatures, and composite lit types).
+// corresponding concrete type expression in common *type positions*.
+//
+// Besides fields/specs/type specs and composite-literal types, this also
+// handles:
+//   - builtin `make`/`new`: first argument is a type expression
+//   - type conversions: the callee expression itself is a type (e.g. T(x))
+//
+// In all these spots we run `substInExpr` to swap type params (e.g., K,V,H)
+// with their concrete type expressions.
 func applySubstToNode(n ast.Node, subst map[string]ast.Expr) {
 	ast.Inspect(n, func(nn ast.Node) bool {
 		switch x := nn.(type) {
@@ -489,8 +531,22 @@ func applySubstToNode(n ast.Node, subst map[string]ast.Expr) {
 				x.Type = substInExpr(x.Type, subst)
 			}
 		case *ast.CompositeLit:
+			// e.g. &HashTable[K,H,V]{ ... }
 			if x.Type != nil {
 				x.Type = substInExpr(x.Type, subst)
+			}
+		case *ast.CallExpr:
+			// Handle type conversions: Foo[T](v) or T(v)
+			// (when Fun denotes a type expression)
+			x.Fun = substInExpr(x.Fun, subst)
+
+			// Handle builtins that take a type as the first arg.
+			if id, ok := x.Fun.(*ast.Ident); ok {
+				if id.Name == "make" || id.Name == "new" {
+					if len(x.Args) > 0 {
+						x.Args[0] = substInExpr(x.Args[0], subst) // e.g. make([]hashTableEntry[K,V], n)
+					}
+				}
 			}
 		}
 		return true
@@ -903,4 +959,154 @@ func getFuncDecl(file *ast.File, genFuncs map[string]*ast.FuncDecl, name string)
 		}
 	}
 	return nil
+}
+
+// --------- hoistability (types-based) ---------
+
+// isHoistableType returns true if t mentions no block-local named types.
+// Predeclareds and package-level named types are OK; everything else must
+// recursively be OK as well.
+func isHoistableType(t types.Type) bool {
+	seen := map[types.Type]bool{}
+	var rec func(types.Type) bool
+	rec = func(tt types.Type) bool {
+		if tt == nil {
+			return true
+		}
+		if seen[tt] {
+			return true
+		}
+		seen[tt] = true
+
+		switch x := tt.(type) {
+		case *types.Basic:
+			return true
+		case *types.Pointer:
+			return rec(x.Elem())
+		case *types.Slice:
+			return rec(x.Elem())
+		case *types.Array:
+			return rec(x.Elem())
+		case *types.Map:
+			return rec(x.Key()) && rec(x.Elem())
+		case *types.Chan:
+			return rec(x.Elem())
+		case *types.Tuple:
+			for i := 0; i < x.Len(); i++ {
+				if !rec(x.At(i).Type()) {
+					return false
+				}
+			}
+			return true
+		case *types.Signature:
+			p := x.Params()
+			for i := 0; i < p.Len(); i++ {
+				if !rec(p.At(i).Type()) {
+					return false
+				}
+			}
+			r := x.Results()
+			for i := 0; i < r.Len(); i++ {
+				if !rec(r.At(i).Type()) {
+					return false
+				}
+			}
+			return true
+		case *types.Interface:
+			for i := 0; i < x.NumEmbeddeds(); i++ {
+				if !rec(x.EmbeddedType(i)) {
+					return false
+				}
+			}
+			for i := 0; i < x.NumMethods(); i++ {
+				if !rec(x.Method(i).Type()) {
+					return false
+				}
+			}
+			return true
+		case *types.Struct:
+			for i := 0; i < x.NumFields(); i++ {
+				if !rec(x.Field(i).Type()) {
+					return false
+				}
+			}
+			return true
+		case *types.Named:
+			obj := x.Obj()
+			// Predeclareds are *Basic, but be defensive:
+			if obj == nil || obj.Pkg() == nil {
+				return true
+			}
+			// OK iff declared in package scope of its package.
+			if obj.Parent() != obj.Pkg().Scope() {
+				return false
+			}
+			// Also check underlying just in case.
+			return rec(x.Underlying())
+		case *types.TypeParam:
+			// Type params themselves are not hoistable as concrete args.
+			return false
+		default:
+			return rec(x.Underlying())
+		}
+	}
+	return rec(t)
+}
+
+// predeclTypeByName returns a predeclared type by name (e.g., "int", "string", "any", "error").
+// Returns nil if the name isn't a predeclared/builtin type.
+func predeclTypeByName(name string) types.Type {
+	switch name {
+	case "bool":
+		return types.Typ[types.Bool]
+	case "byte":
+		return types.Typ[types.Byte]
+	case "rune":
+		return types.Typ[types.Rune]
+	case "string":
+		return types.Typ[types.String]
+	case "uintptr":
+		return types.Typ[types.Uintptr]
+	case "int":
+		return types.Typ[types.Int]
+	case "int8":
+		return types.Typ[types.Int8]
+	case "int16":
+		return types.Typ[types.Int16]
+	case "int32":
+		return types.Typ[types.Int32]
+	case "int64":
+		return types.Typ[types.Int64]
+	case "uint":
+		return types.Typ[types.Uint]
+	case "uint8":
+		return types.Typ[types.Uint8]
+	case "uint16":
+		return types.Typ[types.Uint16]
+	case "uint32":
+		return types.Typ[types.Uint32]
+	case "uint64":
+		return types.Typ[types.Uint64]
+	case "float32":
+		return types.Typ[types.Float32]
+	case "float64":
+		return types.Typ[types.Float64]
+	case "complex64":
+		return types.Typ[types.Complex64]
+	case "complex128":
+		return types.Typ[types.Complex128]
+	case "any":
+		// alias to interface{}
+		if tn, ok := types.Universe.Lookup("any").(*types.TypeName); ok {
+			return tn.Type()
+		}
+		return nil
+	case "error":
+		if tn, ok := types.Universe.Lookup("error").(*types.TypeName); ok {
+			return tn.Type()
+		}
+		return nil
+	default:
+		return nil
+	}
 }

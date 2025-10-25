@@ -113,6 +113,16 @@ func SolveA(
 	stdin *Reader,
 	stdout *Writer,
 ) {
+	t := stdin.Int()
+	for range t {
+		solveATest(stdin, stdout)
+	}
+}
+
+func solveATest(
+	stdin *Reader,
+	stdout *Writer,
+) {
 
 	n := stdin.Int()
 	a := NewHashTableG1intG2intHashG3int(0)
@@ -128,7 +138,8 @@ func SolveA(
 		},
 		n,
 		stValue{
-			minA: math.MaxInt,
+			minA:  math.MaxInt,
+			minDP: math.MaxInt,
 		},
 		lazy{},
 	)
@@ -158,6 +169,26 @@ func SolveA(
 	stdout.Int(dp.Get(n-1), '\n')
 }
 
+/*input
+4
+5
+3 1 4 1 5
+10
+9 2 6 5 3 5 8 9 7 9
+8
+1 2 3 4 5 6 7 8
+2
+1 1000000000000000000
+
+*/
+
+/*output
+2
+4
+5
+2
+
+*/
 //package fastio
 //file ..//fastio/reader.go
 
@@ -529,236 +560,277 @@ func (w *Writer) Float(f float64) {
 	w.bytes([]byte(str))
 }
 
-//package segment_tree_iter
-//file ..//segment_tree_iter/go
+//package hash_map
+//file ..//hash_map/go
 
-type segmentTreeNode[value, update any] struct {
-	value  value
-	update update
+const (
+	maxOffset      = 8
+	checkHashFirst = false
+)
+
+type hashTableEntry[K comparable, V any] struct {
+	hash  uint64
+	key   K
+	value V
 }
 
-type SegmentTree[
-	value interface{ Merge(value) value },
-	update interface {
-		ApplyUpdate(*value)
-		Push(*update)
-	},
-] struct {
-	log2n      int
-	n          int // power of two, number of leaves
-	arr        []segmentTreeNodeG1valueG2update
-	zeroValue  value
-	zeroUpdate update
+type Hasher interface {
+	Hash() uint64
 }
 
-func NewSegmentTree[
-	value interface{ Merge(value) value },
-	update interface {
-		ApplyUpdate(*value)
-		Push(*update)
-	},
-](
-	init func(int) value,
+type HashTable[K comparable, H Hasher, V any] struct {
+	entries1 []hashTableEntryG1KG2V
+	entries2 [][]hashTableEntryG1KG2V
+	log2Size int
+	oddSalt1 uint64
+	oddSalt2 uint64
+	count    int
+}
+
+func NewHashTable[K comparable, H Hasher, V any](
 	size int,
-	zeroValue value,
-	zeroUpdate update,
-) *SegmentTreeG1valueG2update {
-	if size <= 0 {
-		panic("size must be positive")
-	}
-	log2n := LogCeil(uint64(size))
-	n := 1 << log2n
-	arr := make([]segmentTreeNodeG1valueG2update, 2*n)
-	for i := range size {
-		*Get(arr, n+i) = segmentTreeNodeG1valueG2update{init(i), zeroUpdate}
-	}
-	for i := size; i < n; i++ {
-		*Get(arr, n+i) = segmentTreeNodeG1valueG2update{zeroValue, zeroUpdate}
-	}
-	for i := n - 1; i > 0; i-- {
-		*Get(arr, i) = segmentTreeNodeG1valueG2update{(Get(arr, 2*i).value).Merge(Get(arr, 2*i+1).value), zeroUpdate}
-	}
-	return &SegmentTreeG1valueG2update{
-		log2n:      log2n,
-		n:          n,
-		arr:        arr,
-		zeroValue:  zeroValue,
-		zeroUpdate: zeroUpdate,
+) *HashTable[K, H, V] {
+	log2Size := LogCeil(uint64(size*2 + 1))
+	return &HashTable[K, H, V]{
+		entries1: make([]hashTableEntryG1KG2V, (1<<log2Size)+maxOffset),
+		entries2: make([][]hashTableEntryG1KG2V, 1<<log2Size),
+		log2Size: log2Size,
+		oddSalt1: rand.Uint64() | 1,
+		oddSalt2: rand.Uint64() | 1,
+		count:    0,
 	}
 }
 
-/*
-n = 16 log2n = 4
-
-0 |  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1
-1 |  2  2  2  2  2  2  2  2  3  3  3  3  3  3  3  3
-2 |  4  4  4  4  5  5  5  5  6  6  6  6  7  7  7  7
-3 |  8  8  9  9 10 10 11 11 12 12 13 13 14 14 15 15
-4 | 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-
-	[0 ... val(i) ... size-1] [size ... zero ... n]
-*/
-
-func (st SegmentTreeG1valueG2update) SetValue(
-	i int,
-	val value,
-) {
-	if i < 0 || i >= st.n {
-		panic("index out of bounds")
+func (hm *HashTable[K, H, V]) hash(key K) uint64 {
+	val := (*(*H)(unsafe.Pointer(&key))).Hash()
+	if val == 0 {
+		return 1
+	} else {
+		return val
 	}
-	st.pushUpdates(i)
-	(*Get(st.arr, i+st.n)).value = val
-	(*Get(st.arr, i+st.n)).update = st.zeroUpdate
-	st.rebuild(i)
 }
 
-func (st SegmentTreeG1valueG2update) Update(
-	l, r int,
-	upd update,
-) {
-	l = max(l, 0)
-	r = min(r, st.n-1)
-	if l > r {
+func (hm *HashTable[K, H, V]) index1(hash uint64) uint64 {
+	hash *= hm.oddSalt1
+	hash = ReverseBits64(hash)
+	return hash & (1<<hm.log2Size - 1)
+}
+
+func (hm *HashTable[K, H, V]) index2(hash uint64) uint64 {
+	hash *= hm.oddSalt2
+	hash = ReverseBits64(hash)
+	return hash & (1<<hm.log2Size - 1)
+}
+
+func (hm *HashTable[K, H, V]) Get(key K) V {
+	val, ok := hm.Get2(key)
+	if !ok {
+		var zero V
+		return zero
+	}
+	return val
+}
+
+func (hm *HashTable[K, H, V]) Get2(key K) (V, bool) {
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := GetArr(hm.entries1, int(index1))
+	var zero V
+	for _, val := range arr {
+		if val.hash == 0 {
+			return zero, false
+		}
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			return val.value, true
+		}
+	}
+	index2 := hm.index2(hash)
+	for _, val := range *Get(hm.entries2, int(index2)) {
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			return val.value, true
+		}
+	}
+	return zero, false
+}
+
+func (hm *HashTable[K, H, V]) Delete(key K) bool {
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := GetArr(hm.entries1, int(index1))
+	for i := range maxOffset {
+		e := &arr[i]
+		if e.hash == 0 {
+			return false
+		}
+		if (!checkHashFirst || e.hash == hash) && e.key == key {
+			e.hash = 0
+			hm.count--
+			return true
+		}
+	}
+	index2 := hm.index2(hash)
+	slice := *Get(hm.entries2, int(index2))
+	for i := range slice {
+		val := &slice[i]
+		if (!checkHashFirst || val.hash == hash) && val.key == key {
+			*val = *Get(slice, len(slice)-1)
+			slice = slice[:len(slice)-1]
+			*Get(hm.entries2, int(index2)) = slice
+			hm.count--
+			return true
+		}
+	}
+	return false
+}
+
+func (hm *HashTable[K, H, V]) Set(key K, value V) {
+	if hm.count*2 >= (1 << hm.log2Size) {
+		hm.resize()
+	}
+	hash := hm.hash(key)
+	index1 := hm.index1(hash)
+	arr := GetArr(hm.entries1, int(index1))
+	for i := range maxOffset {
+		e := &arr[i]
+		if e.hash == 0 {
+			*e = hashTableEntryG1KG2V{
+				hash:  hash,
+				key:   key,
+				value: value,
+			}
+			hm.count++
+			return
+		} else if (!checkHashFirst || e.hash == hash) && e.key == key {
+			e.value = value
+			return
+		}
+	}
+	index2 := hm.index2(hash)
+	entries := Get(hm.entries2, int(index2))
+	for i, val := range *entries {
+		if val.hash == hash && val.key == key {
+			Get(*entries, i).value = value
+			return
+		}
+	}
+	*entries = append(*entries, hashTableEntryG1KG2V{
+		hash:  hash,
+		key:   key,
+		value: value,
+	})
+	hm.count++
+}
+
+func (hm *HashTable[K, H, V]) resize() {
+	hm.log2Size++
+	newEntries1 := make([]hashTableEntryG1KG2V, (1<<hm.log2Size)+maxOffset)
+	newEntries2 := make([][]hashTableEntryG1KG2V, 1<<hm.log2Size)
+	add := func(e hashTableEntryG1KG2V) {
+		hash := hm.hash(e.key)
+		index1 := hm.index1(hash)
+		arr := GetArr(newEntries1, int(index1))
+		for j := range arr {
+			if arr[j].hash == 0 {
+				arr[j] = e
+				return
+			}
+		}
+		index2 := hm.index2(hash)
+		entries := Get(newEntries2, int(index2))
+		*entries = append(*entries, e)
+	}
+	for _, e := range hm.entries1 {
+		if e.hash == 0 {
+			continue
+		}
+		add(e)
+	}
+	for _, bucket := range hm.entries2 {
+		for _, e := range bucket {
+			add(e)
+		}
+	}
+	hm.entries1 = newEntries1
+	hm.entries2 = newEntries2
+}
+
+//package hash_map
+//file ..//hash_map/hash_map_test.go
+
+type intHasher int
+
+func (x intHasher) Hash() uint64 {
+	return uint64(x)
+}
+
+func BenchmarkHashMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = rand.Int()
+	}
+	b.ResetTimer()
+	hashMap := NewHashTableG1intG2intHasherG3int(b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				hashMap.Set(a, a)
+			} else {
+				hashMap.Get(a)
+			}
+		}
+	}
+}
+
+func BenchmarkBuiltinMap(b *testing.B) {
+	a := make([]int, b.N)
+	for i := 0; i < b.N; i++ {
+		a[i] = i*37 + 17
+	}
+	b.ResetTimer()
+	m := make(map[int]int, b.N)
+	for range b.N {
+		for _, a := range a {
+			if rand.IntN(2) == 0 {
+				m[a] = a
+			} else {
+				_ = m[a]
+			}
+		}
+	}
+}
+
+//package debug
+//file ..//debug/go
+
+func Go(fn func()) {
+	go func() {
+		defer Recover()
+		fn()
+	}()
+}
+
+func Recover() {
+	err := recover()
+	if err == nil {
 		return
 	}
+	defer os.Exit(13)
 
-	st.pushUpdates(l)
-	st.pushUpdates(r)
-	{
-		l, r := l+st.n, r+st.n
-		for l <= r {
-			if l%2 == 1 {
-				(upd).Push(&(*Get(st.arr, l)).update)
-				l = l/2 + 1
-			} else {
-				l = l / 2
-			}
-			if r%2 == 0 {
-				(upd).Push(&(*Get(st.arr, r)).update)
-				r = r/2 - 1
-			} else {
-				r = r / 2
-			}
-		}
-	}
-	st.rebuild(l)
-	st.rebuild(r)
+	buf := make([]byte, 10000)
+	n := runtime.Stack(buf, false)
+	buf = buf[:n]
+	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
 }
 
-func (st SegmentTreeG1valueG2update) Get(
-	l, r int,
-) value {
-	l = max(l, 0)
-	r = min(r, st.n-1)
-	if l > r {
-		return st.zeroValue
-	}
-	st.pushUpdates(l)
-	st.pushUpdates(r)
-	summedL := st.zeroValue
-	summedR := st.zeroValue
-	l, r = l+st.n, r+st.n
-	for l <= r {
-		if l%2 == 1 {
-			// apply update on-the-fly without copying node back
-			(Get(st.arr, l).update).ApplyUpdate(&Get(st.arr, l).value)
-			summedL = summedL.Merge((*Get(st.arr, l)).value)
-			l = l/2 + 1
-		} else {
-			l = l / 2
+func PrintSeconds() {
+	start := time.Now()
+	ticker := time.NewTicker(time.Second * 10)
+	go func() {
+		defer Recover()
+		for range ticker.C {
+			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
 		}
-		if r%2 == 0 {
-			(Get(st.arr, r).update).ApplyUpdate(&Get(st.arr, r).value)
-			summedR = Get(st.arr, r).value.Merge(summedR)
-			r = r/2 - 1
-		} else {
-			r = r / 2
-		}
-	}
-	return summedL.Merge(summedR)
-}
-
-func (st SegmentTreeG1valueG2update) LongestRangeWherePredicate(
-	rMax int,
-	predicate func(value) bool,
-) (int, bool) {
-	if rMax < 0 || rMax >= st.n {
-		panic("invalid rMax")
-	}
-
-	st.pushUpdates(rMax)
-	i := rMax + st.n
-	if !predicate(Get(st.arr, i).value) {
-		return -1, false
-	}
-	summedValue := st.zeroValue
-	for i > 0 {
-		arrVal := Get(st.arr, i)
-		(arrVal.update).ApplyUpdate(&arrVal.value)
-		val := arrVal.value.Merge(summedValue)
-		if predicate(val) {
-			if IsPowerOf2(i) {
-				return 0, true
-			}
-			if i%2 == 0 {
-				i = i/2 - 1
-				summedValue = val.Merge(summedValue)
-			} else {
-				i = i / 2
-			}
-		} else {
-			break
-		}
-	}
-
-	upd := Get(st.arr, i).update
-	for i < st.n {
-		val := Get(st.arr, 2*i+1)
-		(upd).Push(&val.update)
-		(upd).ApplyUpdate(&val.value)
-		combined := val.value.Merge(summedValue)
-		if predicate(combined) {
-			summedValue = combined
-			i = 2 * i
-		} else {
-			upd = val.update
-			i = 2*i + 1
-		}
-	}
-	return i - st.n + 1, true
-}
-
-func (st SegmentTreeG1valueG2update) pushUpdates(
-	i int,
-) {
-	i += st.n
-	for shift := st.log2n; shift > 0; shift-- {
-		i := i >> shift
-		update := Get(st.arr, i).update
-
-		Get(st.arr, i).update = st.zeroUpdate
-		(update).ApplyUpdate(&Get(st.arr, i).value)
-
-		(update).Push(&Get(st.arr, 2*i).update)
-		(update).Push(&Get(st.arr, 2*i+1).update)
-	}
-	(Get(st.arr, i).update).ApplyUpdate(&Get(st.arr, i).value)
-	Get(st.arr, i).update = st.zeroUpdate
-}
-
-func (st SegmentTreeG1valueG2update) rebuild(
-	i int,
-) {
-	i += st.n
-	i /= 2
-	for i != 0 {
-		left := Get(st.arr, 2*i)
-		(left.update).ApplyUpdate(&left.value)
-		right := Get(st.arr, 2*i+1)
-		(right.update).ApplyUpdate(&right.value)
-		Get(st.arr, i).value = left.value.Merge(right.value)
-		i = i / 2
-	}
+	}()
 }
 
 //package hackercup
@@ -963,277 +1035,236 @@ func matrixMultiply(a, b [][]int) [][]int {
 
 const mod = 1_000_000_007
 
-//package hash_map
-//file ..//hash_map/go
+//package segment_tree_iter
+//file ..//segment_tree_iter/go
 
-const (
-	maxOffset      = 8
-	checkHashFirst = false
-)
-
-type hashTableEntry[K comparable, V any] struct {
-	hash  uint64
-	key   K
-	value V
+type segmentTreeNode[value, update any] struct {
+	value  value
+	update update
 }
 
-type Hasher interface {
-	Hash() uint64
+type SegmentTree[
+	value interface{ Merge(value) value },
+	update interface {
+		ApplyUpdate(*value)
+		Push(*update)
+	},
+] struct {
+	log2n      int
+	n          int // power of two, number of leaves
+	arr        []segmentTreeNodeG1valueG2update
+	zeroValue  value
+	zeroUpdate update
 }
 
-type HashTable[K comparable, H Hasher, V any] struct {
-	entries1 []hashTableEntryG1KG2V
-	entries2 [][]hashTableEntryG1KG2V
-	log2Size int
-	oddSalt1 uint64
-	oddSalt2 uint64
-	count    int
-}
-
-func NewHashTable[K comparable, H Hasher, V any](
+func NewSegmentTree[
+	value interface{ Merge(value) value },
+	update interface {
+		ApplyUpdate(*value)
+		Push(*update)
+	},
+](
+	init func(int) value,
 	size int,
-) *HashTableG1KG2HG3V {
-	log2Size := LogCeil(uint64(size*2 + 1))
-	return &HashTableG1KG2HG3V{
-		entries1: make([]hashTableEntryG1KG2V, (1<<log2Size)+maxOffset),
-		entries2: make([][]hashTableEntryG1KG2V, 1<<log2Size),
-		log2Size: log2Size,
-		oddSalt1: rand.Uint64() | 1,
-		oddSalt2: rand.Uint64() | 1,
-		count:    0,
+	zeroValue value,
+	zeroUpdate update,
+) *SegmentTree[value, update] {
+	if size <= 0 {
+		panic("size must be positive")
+	}
+	log2n := LogCeil(uint64(size))
+	n := 1 << log2n
+	arr := make([]segmentTreeNodeG1valueG2update, 2*n)
+	for i := range size {
+		*Get(arr, n+i) = segmentTreeNodeG1valueG2update{init(i), zeroUpdate}
+	}
+	for i := size; i < n; i++ {
+		*Get(arr, n+i) = segmentTreeNodeG1valueG2update{zeroValue, zeroUpdate}
+	}
+	for i := n - 1; i > 0; i-- {
+		*Get(arr, i) = segmentTreeNodeG1valueG2update{(Get(arr, 2*i).value).Merge(Get(arr, 2*i+1).value), zeroUpdate}
+	}
+	return &SegmentTree[value, update]{
+		log2n:      log2n,
+		n:          n,
+		arr:        arr,
+		zeroValue:  zeroValue,
+		zeroUpdate: zeroUpdate,
 	}
 }
 
-func (hm *HashTableG1KG2HG3V) hash(key K) uint64 {
-	val := (*(*H)(unsafe.Pointer(&key))).Hash()
-	if val == 0 {
-		return 1
-	} else {
-		return val
+/*
+n = 16 log2n = 4
+
+0 |  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1
+1 |  2  2  2  2  2  2  2  2  3  3  3  3  3  3  3  3
+2 |  4  4  4  4  5  5  5  5  6  6  6  6  7  7  7  7
+3 |  8  8  9  9 10 10 11 11 12 12 13 13 14 14 15 15
+4 | 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+
+	[0 ... val(i) ... size-1] [size ... zero ... n]
+*/
+
+func (st SegmentTree[value, update]) SetValue(
+	i int,
+	val value,
+) {
+	if i < 0 || i >= st.n {
+		panic("index out of bounds")
 	}
+	st.pushUpdates(i)
+	(*Get(st.arr, i+st.n)).value = val
+	(*Get(st.arr, i+st.n)).update = st.zeroUpdate
+	st.rebuild(i)
 }
 
-func (hm *HashTableG1KG2HG3V) index1(hash uint64) uint64 {
-	hash *= hm.oddSalt1
-	hash = ReverseBits64(hash)
-	return hash & (1<<hm.log2Size - 1)
-}
-
-func (hm *HashTableG1KG2HG3V) index2(hash uint64) uint64 {
-	hash *= hm.oddSalt2
-	hash = ReverseBits64(hash)
-	return hash & (1<<hm.log2Size - 1)
-}
-
-func (hm *HashTableG1KG2HG3V) Get(key K) V {
-	val, ok := hm.Get2(key)
-	if !ok {
-		var zero V
-		return zero
-	}
-	return val
-}
-
-func (hm *HashTableG1KG2HG3V) Get2(key K) (V, bool) {
-	hash := hm.hash(key)
-	index1 := hm.index1(hash)
-	arr := GetArr(hm.entries1, int(index1))
-	var zero V
-	for _, val := range arr {
-		if val.hash == 0 {
-			return zero, false
-		}
-		if (!checkHashFirst || val.hash == hash) && val.key == key {
-			return val.value, true
-		}
-	}
-	index2 := hm.index2(hash)
-	for _, val := range *Get(hm.entries2, int(index2)) {
-		if (!checkHashFirst || val.hash == hash) && val.key == key {
-			return val.value, true
-		}
-	}
-	return zero, false
-}
-
-func (hm *HashTableG1KG2HG3V) Delete(key K) bool {
-	hash := hm.hash(key)
-	index1 := hm.index1(hash)
-	arr := GetArr(hm.entries1, int(index1))
-	for i := range maxOffset {
-		e := &arr[i]
-		if e.hash == 0 {
-			return false
-		}
-		if (!checkHashFirst || e.hash == hash) && e.key == key {
-			e.hash = 0
-			hm.count--
-			return true
-		}
-	}
-	index2 := hm.index2(hash)
-	slice := *Get(hm.entries2, int(index2))
-	for i := range slice {
-		val := &slice[i]
-		if (!checkHashFirst || val.hash == hash) && val.key == key {
-			*val = *Get(slice, len(slice)-1)
-			slice = slice[:len(slice)-1]
-			*Get(hm.entries2, int(index2)) = slice
-			hm.count--
-			return true
-		}
-	}
-	return false
-}
-
-func (hm *HashTableG1KG2HG3V) Set(key K, value V) {
-	if hm.count*2 >= (1 << hm.log2Size) {
-		hm.resize()
-	}
-	hash := hm.hash(key)
-	index1 := hm.index1(hash)
-	arr := GetArr(hm.entries1, int(index1))
-	for i := range maxOffset {
-		e := &arr[i]
-		if e.hash == 0 {
-			*e = hashTableEntryG1KG2V{
-				hash:  hash,
-				key:   key,
-				value: value,
-			}
-			hm.count++
-			return
-		} else if (!checkHashFirst || e.hash == hash) && e.key == key {
-			e.value = value
-			return
-		}
-	}
-	index2 := hm.index2(hash)
-	entries := Get(hm.entries2, int(index2))
-	for i, val := range *entries {
-		if val.hash == hash && val.key == key {
-			Get(*entries, i).value = value
-			return
-		}
-	}
-	*entries = append(*entries, hashTableEntryG1KG2V{
-		hash:  hash,
-		key:   key,
-		value: value,
-	})
-	hm.count++
-}
-
-func (hm *HashTableG1KG2HG3V) resize() {
-	hm.log2Size++
-	newEntries1 := make([]hashTableEntryG1KG2V, (1<<hm.log2Size)+maxOffset)
-	newEntries2 := make([][]hashTableEntryG1KG2V, 1<<hm.log2Size)
-	add := func(e hashTableEntryG1KG2V) {
-		hash := hm.hash(e.key)
-		index1 := hm.index1(hash)
-		arr := GetArr(newEntries1, int(index1))
-		for j := range arr {
-			if arr[j].hash == 0 {
-				arr[j] = e
-				return
-			}
-		}
-		index2 := hm.index2(hash)
-		entries := Get(newEntries2, int(index2))
-		*entries = append(*entries, e)
-	}
-	for _, e := range hm.entries1 {
-		if e.hash == 0 {
-			continue
-		}
-		add(e)
-	}
-	for _, bucket := range hm.entries2 {
-		for _, e := range bucket {
-			add(e)
-		}
-	}
-	hm.entries1 = newEntries1
-	hm.entries2 = newEntries2
-}
-
-//package hash_map
-//file ..//hash_map/hash_map_test.go
-
-type intHasher int
-
-func (x intHasher) Hash() uint64 {
-	return uint64(x)
-}
-
-func BenchmarkHashMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = rand.Int()
-	}
-	b.ResetTimer()
-	hashMap := NewHashTableG1intG2intHasherG3int(b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				hashMap.Set(a, a)
-			} else {
-				hashMap.Get(a)
-			}
-		}
-	}
-}
-
-func BenchmarkBuiltinMap(b *testing.B) {
-	a := make([]int, b.N)
-	for i := 0; i < b.N; i++ {
-		a[i] = i*37 + 17
-	}
-	b.ResetTimer()
-	m := make(map[int]int, b.N)
-	for range b.N {
-		for _, a := range a {
-			if rand.IntN(2) == 0 {
-				m[a] = a
-			} else {
-				_ = m[a]
-			}
-		}
-	}
-}
-
-//package debug
-//file ..//debug/go
-
-func Go(fn func()) {
-	go func() {
-		defer Recover()
-		fn()
-	}()
-}
-
-func Recover() {
-	err := recover()
-	if err == nil {
+func (st SegmentTree[value, update]) Update(
+	l, r int,
+	upd update,
+) {
+	l = max(l, 0)
+	r = min(r, st.n-1)
+	if l > r {
 		return
 	}
-	defer os.Exit(13)
 
-	buf := make([]byte, 10000)
-	n := runtime.Stack(buf, false)
-	buf = buf[:n]
-	fmt.Fprintf(os.Stderr, "panic: %v\nstacktrace:\n%s", err, string(buf))
+	st.pushUpdates(l)
+	st.pushUpdates(r)
+	{
+		l, r := l+st.n, r+st.n
+		for l <= r {
+			if l%2 == 1 {
+				(upd).Push(&(*Get(st.arr, l)).update)
+				l = l/2 + 1
+			} else {
+				l = l / 2
+			}
+			if r%2 == 0 {
+				(upd).Push(&(*Get(st.arr, r)).update)
+				r = r/2 - 1
+			} else {
+				r = r / 2
+			}
+		}
+	}
+	st.rebuild(l)
+	st.rebuild(r)
 }
 
-func PrintSeconds() {
-	start := time.Now()
-	ticker := time.NewTicker(time.Second * 10)
-	go func() {
-		defer Recover()
-		for range ticker.C {
-			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
+func (st SegmentTree[value, update]) Get(
+	l, r int,
+) value {
+	l = max(l, 0)
+	r = min(r, st.n-1)
+	if l > r {
+		return st.zeroValue
+	}
+	st.pushUpdates(l)
+	st.pushUpdates(r)
+	summedL := st.zeroValue
+	summedR := st.zeroValue
+	l, r = l+st.n, r+st.n
+	for l <= r {
+		if l%2 == 1 {
+			// apply update on-the-fly without copying node back
+			(Get(st.arr, l).update).ApplyUpdate(&Get(st.arr, l).value)
+			summedL = summedL.Merge((*Get(st.arr, l)).value)
+			l = l/2 + 1
+		} else {
+			l = l / 2
 		}
-	}()
+		if r%2 == 0 {
+			(Get(st.arr, r).update).ApplyUpdate(&Get(st.arr, r).value)
+			summedR = Get(st.arr, r).value.Merge(summedR)
+			r = r/2 - 1
+		} else {
+			r = r / 2
+		}
+	}
+	return summedL.Merge(summedR)
+}
+
+func (st SegmentTree[value, update]) LongestRangeWherePredicate(
+	rMax int,
+	predicate func(value) bool,
+) (int, bool) {
+	if rMax < 0 || rMax >= st.n {
+		panic("invalid rMax")
+	}
+
+	st.pushUpdates(rMax)
+	i := rMax + st.n
+	if !predicate(Get(st.arr, i).value) {
+		return -1, false
+	}
+	summedValue := st.zeroValue
+	for i > 0 {
+		arrVal := Get(st.arr, i)
+		(arrVal.update).ApplyUpdate(&arrVal.value)
+		val := arrVal.value.Merge(summedValue)
+		if predicate(val) {
+			if IsPowerOf2G1int(i) {
+				return 0, true
+			}
+			if i%2 == 0 {
+				i = i/2 - 1
+				summedValue = val.Merge(summedValue)
+			} else {
+				i = i / 2
+			}
+		} else {
+			break
+		}
+	}
+
+	upd := Get(st.arr, i).update
+	for i < st.n {
+		val := Get(st.arr, 2*i+1)
+		(upd).Push(&val.update)
+		(upd).ApplyUpdate(&val.value)
+		combined := val.value.Merge(summedValue)
+		if predicate(combined) {
+			summedValue = combined
+			i = 2 * i
+		} else {
+			upd = val.update
+			i = 2*i + 1
+		}
+	}
+	return i - st.n + 1, true
+}
+
+func (st SegmentTree[value, update]) pushUpdates(
+	i int,
+) {
+	i += st.n
+	for shift := st.log2n; shift > 0; shift-- {
+		i := i >> shift
+		update := Get(st.arr, i).update
+
+		Get(st.arr, i).update = st.zeroUpdate
+		(update).ApplyUpdate(&Get(st.arr, i).value)
+
+		(update).Push(&Get(st.arr, 2*i).update)
+		(update).Push(&Get(st.arr, 2*i+1).update)
+	}
+	(Get(st.arr, i).update).ApplyUpdate(&Get(st.arr, i).value)
+	Get(st.arr, i).update = st.zeroUpdate
+}
+
+func (st SegmentTree[value, update]) rebuild(
+	i int,
+) {
+	i += st.n
+	i /= 2
+	for i != 0 {
+		left := Get(st.arr, 2*i)
+		(left.update).ApplyUpdate(&left.value)
+		right := Get(st.arr, 2*i+1)
+		(right.update).ApplyUpdate(&right.value)
+		Get(st.arr, i).value = left.value.Merge(right.value)
+		i = i / 2
+	}
 }
 
 //package utils
@@ -1347,11 +1378,31 @@ func Abs(x int) int {
 	}
 	return x
 }
+func IsPowerOf2G1int(x int,
+
+) bool {
+	x64 := uint64(x)
+	return x64 !=
+		0 && (x64&
+		(x64-
+			1)) == 0
+}
 func NewHashTableG1intG2intHashG3int(size int) *HashTableG1intG2intHashG3int {
 	log2Size :=
 		LogCeil(uint64(size*2 +
 			1))
 	return &HashTableG1intG2intHashG3int{entries1: make([]hashTableEntryG1KG2V,
+
+		(1<<log2Size)+maxOffset), entries2: make([][]hashTableEntryG1KG2V,
+
+		1<<log2Size), log2Size: log2Size, oddSalt1: rand.Uint64() | 1,
+		oddSalt2: rand.Uint64() | 1, count: 0}
+}
+func NewHashTableG1intG2intHasherG3int(size int) *HashTableG1intG2intHasherG3int {
+	log2Size :=
+		LogCeil(uint64(size*2 +
+			1))
+	return &HashTableG1intG2intHasherG3int{entries1: make([]hashTableEntryG1KG2V,
 
 		(1<<log2Size)+maxOffset), entries2: make([][]hashTableEntryG1KG2V,
 
@@ -1396,268 +1447,15 @@ func NewSegmentTreeG1stValueG2lazy(init func(int) stValue,
 	}
 }
 
-type segmentTreeNodeG1valueG2update struct {
-	value value
-
-	update update
-}
-type SegmentTreeG1valueG2update struct {
-	log2n int
-	n     int
-
-	arr []segmentTreeNodeG1valueG2update
-
-	zeroValue value
-
-	zeroUpdate update
-}
-
-func (st SegmentTreeG1valueG2update,
-
-) SetValue(i int, val value,
-
-) {
-	if i <
-		0 || i >=
-		st.n {
-		panic("index out of bounds")
-	}
-	st.pushUpdates(i)
-	(*Get(st.
-		arr, i+st.n)).
-		value = val
-	(*Get(st.arr, i+
-		st.n)).update = st.zeroUpdate
-	st.rebuild(i)
-}
-func (st SegmentTreeG1valueG2update,
-
-) Update(l, r int, upd update,
-
-) {
-	l =
-		max(l, 0)
-	r = min(
-		r, st.n-1)
-	if l > r {
-		return
-	}
-	st.pushUpdates(l)
-	st.pushUpdates(r)
-	{
-
-		l, r :=
-			l+st.n, r+st.n
-		for l <= r {
-			if l%2 == 1 {
-				(upd).
-					Push(&(*Get(st.arr,
-						l)).update)
-				l = l/2 + 1
-			} else {
-				l = l / 2
-			}
-			if r%2 == 0 {
-				(upd).
-					Push(&(*Get(st.
-						arr, r)).update)
-				r = r/2 - 1
-			} else {
-				r = r /
-					2
-			}
-		}
-	}
-	st.
-		rebuild(l)
-	st.rebuild(r)
-}
-func (st SegmentTreeG1valueG2update,
-
-) Get(l, r int) value {
-	l = max(l, 0)
-	r = min(r,
-		st.n-1,
-	)
-	if l > r {
-		return st.
-			zeroValue
-	}
-	st.pushUpdates(l)
-	st.
-		pushUpdates(r)
-
-	summedL := st.zeroValue
-	summedR := st.zeroValue
-	l, r = l+st.n,
-		r+
-			st.n
-	for l <=
-		r {
-		if l%2 == 1 {
-			(Get(st.arr, l).
-				update).ApplyUpdate(&Get(st.
-				arr, l).value)
-			summedL = summedL.
-				Merge((*Get(st.arr, l)).value)
-			l = l/2 + 1
-		} else {
-			l = l / 2
-		}
-		if r%2 == 0 {
-			(Get(st.
-				arr, r).update).ApplyUpdate(&Get(st.arr, r).value)
-			summedR = Get(st.arr,
-				r).value.Merge(summedR)
-			r = r/2 - 1
-		} else {
-			r = r / 2
-		}
-	}
-	return summedL.Merge(summedR)
-}
-func (st SegmentTreeG1valueG2update,
-
-) LongestRangeWherePredicate(rMax int,
-	predicate func(value) bool) (int,
-	bool) {
-	if rMax <
-		0 || rMax >=
-
-		st.n {
-		panic("invalid rMax")
-	}
-	st.
-		pushUpdates(rMax)
-	i := rMax + st.n
-	if !predicate(Get(st.
-		arr,
-		i).value) {
-		return -1, false
-	}
-	summedValue :=
-		st.
-			zeroValue
-	for i > 0 {
-		arrVal := Get(st.
-			arr,
-
-			i)
-		(arrVal.update).ApplyUpdate(&arrVal.value)
-		val := arrVal.value.
-			Merge(summedValue)
-		if predicate(val) {
-
-			if IsPowerOf2(i) {
-				return 0, true
-			}
-			if i%2 == 0 {
-				i = i/2 - 1
-				summedValue =
-					val.Merge(summedValue)
-			} else {
-				i = i / 2
-			}
-		} else {
-			break
-		}
-	}
-	upd := Get(st.
-		arr, i).update
-	for i < st.n {
-		val := Get(st.arr,
-			2*
-				i+1)
-		(upd).
-			Push(&val.
-				update,
-			)
-
-		(upd).ApplyUpdate(&val.
-			value,
-		)
-		combined := val.
-			value.Merge(summedValue)
-		if predicate(combined) {
-			summedValue = combined
-
-			i = 2 * i
-		} else {
-			upd = val.
-				update
-			i = 2*i +
-				1
-		}
-	}
-	return i - st.n + 1, true
-}
-func (st SegmentTreeG1valueG2update,
-
-) pushUpdates(i int) {
-	i +=
-		st.n
-	for shift := st.
-		log2n; shift > 0; shift-- {
-		i := i >>
-			shift
-		update := Get(st.arr,
-			i).update
-		Get(st.arr,
-			i).update = st.zeroUpdate
-		(update).ApplyUpdate(&Get(
-			st.
-				arr, i).value)
-		(update).Push(&Get(
-			st.arr, 2*i).update,
-		)
-		(update).Push(&Get(st.
-			arr, 2*i+1).update,
-		)
-	}
-	(Get(st.arr,
-		i).update).ApplyUpdate(&Get(st.arr, i).value)
-	Get(st.arr,
-		i).update = st.
-		zeroUpdate
-}
-func (st SegmentTreeG1valueG2update,
-
-) rebuild(i int) {
-	i += st.
-		n
-	i /= 2
-	for i != 0 {
-		left := Get(st.arr,
-			2*i)
-		(left.
-			update).ApplyUpdate(&left.value)
-		right := Get(st.arr,
-			2*i+1)
-		(right.update).ApplyUpdate(&right.value)
-		Get(
-			st.
-				arr, i).value = left.value.Merge(right.
-			value)
-		i = i /
-			2
-	}
-}
-
 type PairG1intG2int struct {
 	X int
 
 	Y int
 }
-type hashTableEntryG1KG2V struct {
-	hash uint64
-	key  K
+type HashTableG1intG2intHashG3int struct {
+	entries1 []hashTableEntryG1intG2int
 
-	value V
-}
-type HashTableG1KG2HG3V struct {
-	entries1 []hashTableEntryG1KG2V
-
-	entries2 [][]hashTableEntryG1KG2V
+	entries2 [][]hashTableEntryG1intG2int
 
 	log2Size int
 
@@ -1667,9 +1465,9 @@ type HashTableG1KG2HG3V struct {
 	count int
 }
 
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
-) hash(key K,
+) hash(key int,
 
 ) uint64 {
 	val := (*(*H)(unsafe.
@@ -1681,7 +1479,7 @@ func (hm *HashTableG1KG2HG3V,
 		return val
 	}
 }
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
 ) index1(hash uint64) uint64 {
 	hash *= hm.oddSalt1
@@ -1691,7 +1489,7 @@ func (hm *HashTableG1KG2HG3V,
 			hm.log2Size -
 			1)
 }
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
 ) index2(hash uint64) uint64 {
 	hash *= hm.oddSalt2
@@ -1701,25 +1499,25 @@ func (hm *HashTableG1KG2HG3V,
 			hm.log2Size -
 			1)
 }
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
-) Get(key K,
+) Get(key int,
 
-) V {
+) int {
 	val, ok :=
 		hm.Get2(key)
 	if !ok {
-		var zero V
+		var zero int
 
 		return zero
 	}
 	return val
 }
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
-) Get2(key K,
+) Get2(key int,
 
-) (V,
+) (int,
 
 	bool) {
 	hash :=
@@ -1728,7 +1526,7 @@ func (hm *HashTableG1KG2HG3V,
 	arr := GetArr(
 		hm.entries1,
 		int(index1))
-	var zero V
+	var zero int
 
 	for _, val := range arr {
 		if val.hash ==
@@ -1755,9 +1553,9 @@ func (hm *HashTableG1KG2HG3V,
 	}
 	return zero, false
 }
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
-) Delete(key K,
+) Delete(key int,
 
 ) bool {
 	hash := hm.
@@ -1805,11 +1603,11 @@ func (hm *HashTableG1KG2HG3V,
 	}
 	return false
 }
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
-) Set(key K,
+) Set(key int,
 
-	value V,
+	value int,
 
 ) {
 	if hm.count*
@@ -1828,7 +1626,7 @@ func (hm *HashTableG1KG2HG3V,
 		e := &arr[i]
 		if e.hash ==
 			0 {
-			*e = hashTableEntryG1KG2V{hash: hash, key: key, value: value}
+			*e = hashTableEntryG1intG2int{hash: hash, key: key, value: value}
 			hm.count++
 
 			return
@@ -1847,13 +1645,13 @@ func (hm *HashTableG1KG2HG3V,
 		}
 	}
 
-	*entries = append(*entries, hashTableEntryG1KG2V{hash: hash,
+	*entries = append(*entries, hashTableEntryG1intG2int{hash: hash,
 		key: key, value: value,
 	})
 	hm.
 		count++
 }
-func (hm *HashTableG1KG2HG3V,
+func (hm *HashTableG1intG2intHashG3int,
 
 ) resize() {
 	hm.log2Size++
@@ -1867,7 +1665,7 @@ func (hm *HashTableG1KG2HG3V,
 
 		1<<
 			hm.log2Size)
-	add := func(e hashTableEntryG1KG2V) {
+	add := func(e hashTableEntryG1intG2int) {
 		hash := hm.hash(e.
 			key)
 		index1 := hm.index1(hash)
@@ -1902,23 +1700,12 @@ func (hm *HashTableG1KG2HG3V,
 		entries2 =
 		newEntries2
 
-}
-func NewHashTableG1intG2intHasherG3int(size int) *HashTableG1intG2intHasherG3int {
-	log2Size :=
-		LogCeil(uint64(size*2 +
-			1))
-	return &HashTableG1intG2intHasherG3int{entries1: make([]hashTableEntryG1KG2V,
-
-		(1<<log2Size)+maxOffset), entries2: make([][]hashTableEntryG1KG2V,
-
-		1<<log2Size), log2Size: log2Size, oddSalt1: rand.Uint64() | 1,
-		oddSalt2: rand.Uint64() | 1, count: 0}
 }
 
 type HashTableG1intG2intHasherG3int struct {
-	entries1 []hashTableEntryG1KG2V
+	entries1 []hashTableEntryG1intG2int
 
-	entries2 [][]hashTableEntryG1KG2V
+	entries2 [][]hashTableEntryG1intG2int
 
 	log2Size int
 
@@ -2089,7 +1876,7 @@ func (hm *HashTableG1intG2intHasherG3int,
 		e := &arr[i]
 		if e.hash ==
 			0 {
-			*e = hashTableEntryG1KG2V{hash: hash, key: key, value: value}
+			*e = hashTableEntryG1intG2int{hash: hash, key: key, value: value}
 			hm.count++
 
 			return
@@ -2108,10 +1895,9 @@ func (hm *HashTableG1intG2intHasherG3int,
 		}
 	}
 
-	*entries = append(*entries,
-		hashTableEntryG1KG2V{hash: hash,
-			key: key, value: value,
-		})
+	*entries = append(*entries, hashTableEntryG1intG2int{hash: hash,
+		key: key, value: value,
+	})
 	hm.
 		count++
 }
@@ -2129,258 +1915,7 @@ func (hm *HashTableG1intG2intHasherG3int,
 
 		1<<
 			hm.log2Size)
-	add := func(e hashTableEntryG1KG2V) {
-		hash := hm.hash(e.
-			key)
-		index1 := hm.index1(hash)
-		arr :=
-			GetArr(newEntries1, int(
-				index1))
-		for j := range arr {
-			if arr[j].hash == 0 {
-				arr[j] = e
-				return
-			}
-		}
-		index2 := hm.index2(hash)
-		entries := Get(newEntries2,
-			int(index2))
-		*entries = append(*entries, e)
-	}
-	for _, e := range hm.entries1 {
-		if e.hash == 0 {
-			continue
-		}
-		add(e)
-	}
-	for _, bucket := range hm.entries2 {
-		for _, e := range bucket {
-			add(e)
-		}
-	}
-	hm.entries1 = newEntries1
-
-	hm.
-		entries2 =
-		newEntries2
-
-}
-
-type HashTableG1intG2intHashG3int struct {
-	entries1 []hashTableEntryG1KG2V
-
-	entries2 [][]hashTableEntryG1KG2V
-
-	log2Size int
-
-	oddSalt1 uint64
-	oddSalt2 uint64
-
-	count int
-}
-
-func (hm *HashTableG1intG2intHashG3int,
-
-) hash(key int,
-
-) uint64 {
-	val := (*(*H)(unsafe.
-		Pointer(&key))).Hash()
-	if val ==
-		0 {
-		return 1
-	} else {
-		return val
-	}
-}
-func (hm *HashTableG1intG2intHashG3int,
-
-) index1(hash uint64) uint64 {
-	hash *= hm.oddSalt1
-	hash = ReverseBits64(hash)
-	return hash &
-		(1<<
-			hm.log2Size -
-			1)
-}
-func (hm *HashTableG1intG2intHashG3int,
-
-) index2(hash uint64) uint64 {
-	hash *= hm.oddSalt2
-	hash = ReverseBits64(hash)
-	return hash &
-		(1<<
-			hm.log2Size -
-			1)
-}
-func (hm *HashTableG1intG2intHashG3int,
-
-) Get(key int,
-
-) int {
-	val, ok :=
-		hm.Get2(key)
-	if !ok {
-		var zero int
-
-		return zero
-	}
-	return val
-}
-func (hm *HashTableG1intG2intHashG3int,
-
-) Get2(key int,
-
-) (int,
-
-	bool) {
-	hash :=
-		hm.hash(key)
-	index1 := hm.index1(hash)
-	arr := GetArr(
-		hm.entries1,
-		int(index1))
-	var zero int
-
-	for _, val := range arr {
-		if val.hash ==
-			0 {
-			return zero, false
-		}
-		if (!checkHashFirst ||
-			val.hash == hash) &&
-			val.key == key {
-			return val.value, true
-		}
-	}
-	index2 :=
-		hm.
-			index2(hash)
-	for _, val := range *Get(hm.entries2, int(index2)) {
-		if (!checkHashFirst ||
-			val.hash == hash) &&
-			val.
-				key == key {
-			return val.
-				value, true
-		}
-	}
-	return zero, false
-}
-func (hm *HashTableG1intG2intHashG3int,
-
-) Delete(key int,
-
-) bool {
-	hash := hm.
-		hash(key)
-	index1 :=
-		hm.index1(hash)
-	arr :=
-		GetArr(hm.
-			entries1,
-			int(index1),
-		)
-	for i := range maxOffset {
-
-		e := &arr[i]
-		if e.hash ==
-			0 {
-			return false
-		}
-		if (!checkHashFirst ||
-			e.hash ==
-				hash) && e.key ==
-			key {
-			e.hash =
-				0
-			hm.count--
-			return true
-		}
-	}
-	index2 := hm.index2(hash)
-	slice := *Get(hm.entries2, int(index2))
-	for i := range slice {
-		val := &slice[i]
-		if (!checkHashFirst ||
-			val.hash == hash) && val.key == key {
-			*val = *Get(slice, len(slice)-1)
-			slice = slice[:len(slice)-
-				1]
-			*Get(hm.entries2, int(
-				index2,
-			)) = slice
-			hm.count--
-			return true
-
-		}
-	}
-	return false
-}
-func (hm *HashTableG1intG2intHashG3int,
-
-) Set(key int,
-
-	value int,
-
-) {
-	if hm.count*
-		2 >= (1 <<
-		hm.log2Size) {
-		hm.resize()
-	}
-	hash := hm.
-		hash(key)
-	index1 :=
-		hm.index1(hash)
-	arr := GetArr(hm.entries1,
-		int(index1),
-	)
-	for i := range maxOffset {
-		e := &arr[i]
-		if e.hash ==
-			0 {
-			*e = hashTableEntryG1KG2V{hash: hash, key: key, value: value}
-			hm.count++
-
-			return
-		} else if (!checkHashFirst || e.hash == hash) && e.key == key {
-			e.value = value
-			return
-		}
-	}
-	index2 := hm.index2(hash)
-	entries := Get(hm.entries2, int(index2))
-	for i, val := range *entries {
-		if val.hash == hash &&
-			val.key == key {
-			Get(*entries, i).value = value
-			return
-		}
-	}
-
-	*entries = append(*entries,
-		hashTableEntryG1KG2V{hash: hash,
-			key: key, value: value,
-		})
-	hm.
-		count++
-}
-func (hm *HashTableG1intG2intHashG3int,
-
-) resize() {
-	hm.log2Size++
-	newEntries1 := make([]hashTableEntryG1KG2V,
-
-		(1<<hm.
-			log2Size)+
-			maxOffset,
-	)
-	newEntries2 := make([][]hashTableEntryG1KG2V,
-
-		1<<
-			hm.log2Size)
-	add := func(e hashTableEntryG1KG2V) {
+	add := func(e hashTableEntryG1intG2int) {
 		hash := hm.hash(e.
 			key)
 		index1 := hm.index1(hash)
@@ -2421,7 +1956,8 @@ type SegmentTreeG1stValueG2lazy struct {
 	log2n int
 	n     int
 
-	arr       []segmentTreeNodeG1valueG2update
+	arr []segmentTreeNodeG1stValueG2lazy
+
 	zeroValue stValue
 
 	zeroUpdate lazy
@@ -2563,45 +2099,49 @@ func (st SegmentTreeG1stValueG2lazy,
 			Merge(summedValue)
 		if predicate(val) {
 
-			if IsPowerOf2(i) {
+			if IsPowerOf2G1int(i) {
+
 				return 0, true
 			}
 			if i%2 == 0 {
-				i = i/2 - 1
-				summedValue =
-					val.Merge(summedValue)
+				i = i/
+					2 - 1
+				summedValue = val.Merge(summedValue)
 			} else {
-				i = i / 2
+				i = i /
+					2
 			}
 		} else {
 			break
 		}
 	}
-	upd := Get(st.
-		arr, i).update
-	for i < st.n {
-		val := Get(st.arr,
-			2*
-				i+1)
-		(upd).
-			Push(&val.
-				update,
-			)
+	upd := Get(st.arr, i).update
+	for i <
+		st.n {
+		val := Get(st.
+			arr,
 
-		(upd).ApplyUpdate(&val.
-			value,
+			2*i+1,
 		)
-		combined := val.
-			value.Merge(summedValue)
+
+		(upd).Push(&val.
+			update,
+		)
+		(upd).
+			ApplyUpdate(
+				&val.value,
+			)
+		combined :=
+			val.value.Merge(summedValue)
 		if predicate(combined) {
 			summedValue = combined
-
-			i = 2 * i
+			i =
+				2 * i
 		} else {
-			upd = val.
-				update
-			i = 2*i +
-				1
+			upd = val.update
+			i =
+
+				2*i + 1
 		}
 	}
 	return i - st.n + 1, true
@@ -2658,9 +2198,26 @@ func (st SegmentTreeG1stValueG2lazy,
 	}
 }
 
+type hashTableEntryG1KG2V struct {
+	hash uint64
+	key  K
+
+	value V
+}
 type segmentTreeNodeG1stValueG2lazy struct {
 	value stValue
 
 	update lazy
+}
+type segmentTreeNodeG1valueG2update struct {
+	value value
+
+	update update
+}
+type hashTableEntryG1intG2int struct {
+	hash uint64
+	key  int
+
+	value int
 }
 

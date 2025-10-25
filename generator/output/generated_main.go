@@ -111,6 +111,16 @@ func SolveA(
 	stdin *Reader,
 	stdout *Writer,
 ) {
+	t := stdin.Int()
+	for range t {
+		solveATest(stdin, stdout)
+	}
+}
+
+func solveATest(
+	stdin *Reader,
+	stdout *Writer,
+) {
 
 	n := stdin.Int()
 	a := NewHashTable[int, intHash, int](0)
@@ -126,7 +136,8 @@ func SolveA(
 		},
 		n,
 		stValue{
-			minA: math.MaxInt,
+			minA:  math.MaxInt,
+			minDP: math.MaxInt,
 		},
 		lazy{},
 	)
@@ -155,6 +166,27 @@ func SolveA(
 	}
 	stdout.Int(dp.Get(n-1), '\n')
 }
+
+/*input
+4
+5
+3 1 4 1 5
+10
+9 2 6 5 3 5 8 9 7 9
+8
+1 2 3 4 5 6 7 8
+2
+1 1000000000000000000
+
+*/
+
+/*output
+2
+4
+5
+2
+
+*/
 //package fastio
 //file ..//fastio/reader.go
 
@@ -528,444 +560,6 @@ func (w *Writer) Float(f float64) {
 	str := strconv.FormatFloat(f, 'f', -1, 64)
 	w.bytes([]byte(str))
 }
-//package segment_tree_iter
-//file ..//segment_tree_iter/go
-
-
-
-type segmentTreeNode[value, update any] struct {
-	value  value
-	update update
-}
-
-type SegmentTree[
-	value interface{ Merge(value) value },
-	update interface {
-		ApplyUpdate(*value)
-		Push(*update)
-	},
-] struct {
-	log2n      int
-	n          int // power of two, number of leaves
-	arr        []segmentTreeNode[value, update]
-	zeroValue  value
-	zeroUpdate update
-}
-
-func NewSegmentTree[
-	value interface{ Merge(value) value },
-	update interface {
-		ApplyUpdate(*value)
-		Push(*update)
-	},
-](
-	init func(int) value,
-	size int,
-	zeroValue value,
-	zeroUpdate update,
-) *SegmentTree[value, update] {
-	if size <= 0 {
-		panic("size must be positive")
-	}
-	log2n := LogCeil(uint64(size))
-	n := 1 << log2n
-	arr := make([]segmentTreeNode[value, update], 2*n)
-	for i := range size {
-		*Get(arr, n+i) = segmentTreeNode[value, update]{init(i), zeroUpdate}
-	}
-	for i := size; i < n; i++ {
-		*Get(arr, n+i) = segmentTreeNode[value, update]{zeroValue, zeroUpdate}
-	}
-	for i := n - 1; i > 0; i-- {
-		*Get(arr, i) = segmentTreeNode[value, update]{(Get(arr, 2*i).value).Merge(Get(arr, 2*i+1).value), zeroUpdate}
-	}
-	return &SegmentTree[value, update]{
-		log2n:      log2n,
-		n:          n,
-		arr:        arr,
-		zeroValue:  zeroValue,
-		zeroUpdate: zeroUpdate,
-	}
-}
-
-/*
-n = 16 log2n = 4
-
-0 |  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1
-1 |  2  2  2  2  2  2  2  2  3  3  3  3  3  3  3  3
-2 |  4  4  4  4  5  5  5  5  6  6  6  6  7  7  7  7
-3 |  8  8  9  9 10 10 11 11 12 12 13 13 14 14 15 15
-4 | 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-
-	[0 ... val(i) ... size-1] [size ... zero ... n]
-*/
-
-func (st SegmentTree[value, update]) SetValue(
-	i int,
-	val value,
-) {
-	if i < 0 || i >= st.n {
-		panic("index out of bounds")
-	}
-	st.pushUpdates(i)
-	(*Get(st.arr, i+st.n)).value = val
-	(*Get(st.arr, i+st.n)).update = st.zeroUpdate
-	st.rebuild(i)
-}
-
-func (st SegmentTree[value, update]) Update(
-	l, r int,
-	upd update,
-) {
-	l = max(l, 0)
-	r = min(r, st.n-1)
-	if l > r {
-		return
-	}
-
-	st.pushUpdates(l)
-	st.pushUpdates(r)
-	{
-		l, r := l+st.n, r+st.n
-		for l <= r {
-			if l%2 == 1 {
-				(upd).Push(&(*Get(st.arr, l)).update)
-				l = l/2 + 1
-			} else {
-				l = l / 2
-			}
-			if r%2 == 0 {
-				(upd).Push(&(*Get(st.arr, r)).update)
-				r = r/2 - 1
-			} else {
-				r = r / 2
-			}
-		}
-	}
-	st.rebuild(l)
-	st.rebuild(r)
-}
-
-func (st SegmentTree[value, update]) Get(
-	l, r int,
-) value {
-	l = max(l, 0)
-	r = min(r, st.n-1)
-	if l > r {
-		return st.zeroValue
-	}
-	st.pushUpdates(l)
-	st.pushUpdates(r)
-	summedL := st.zeroValue
-	summedR := st.zeroValue
-	l, r = l+st.n, r+st.n
-	for l <= r {
-		if l%2 == 1 {
-			// apply update on-the-fly without copying node back
-			(Get(st.arr, l).update).ApplyUpdate(&Get(st.arr, l).value)
-			summedL = summedL.Merge((*Get(st.arr, l)).value)
-			l = l/2 + 1
-		} else {
-			l = l / 2
-		}
-		if r%2 == 0 {
-			(Get(st.arr, r).update).ApplyUpdate(&Get(st.arr, r).value)
-			summedR = Get(st.arr, r).value.Merge(summedR)
-			r = r/2 - 1
-		} else {
-			r = r / 2
-		}
-	}
-	return summedL.Merge(summedR)
-}
-
-func (st SegmentTree[value, update]) LongestRangeWherePredicate(
-	rMax int,
-	predicate func(value) bool,
-) (int, bool) {
-	if rMax < 0 || rMax >= st.n {
-		panic("invalid rMax")
-	}
-
-	st.pushUpdates(rMax)
-	i := rMax + st.n
-	if !predicate(Get(st.arr, i).value) {
-		return -1, false
-	}
-	summedValue := st.zeroValue
-	for i > 0 {
-		arrVal := Get(st.arr, i)
-		(arrVal.update).ApplyUpdate(&arrVal.value)
-		val := arrVal.value.Merge(summedValue)
-		if predicate(val) {
-			if IsPowerOf2(i) {
-				return 0, true
-			}
-			if i%2 == 0 {
-				i = i/2 - 1
-				summedValue = val.Merge(summedValue)
-			} else {
-				i = i / 2
-			}
-		} else {
-			break
-		}
-	}
-
-	upd := Get(st.arr, i).update
-	for i < st.n {
-		val := Get(st.arr, 2*i+1)
-		(upd).Push(&val.update)
-		(upd).ApplyUpdate(&val.value)
-		combined := val.value.Merge(summedValue)
-		if predicate(combined) {
-			summedValue = combined
-			i = 2 * i
-		} else {
-			upd = val.update
-			i = 2*i + 1
-		}
-	}
-	return i - st.n + 1, true
-}
-
-func (st SegmentTree[value, update]) pushUpdates(
-	i int,
-) {
-	i += st.n
-	for shift := st.log2n; shift > 0; shift-- {
-		i := i >> shift
-		update := Get(st.arr, i).update
-
-		Get(st.arr, i).update = st.zeroUpdate
-		(update).ApplyUpdate(&Get(st.arr, i).value)
-
-		(update).Push(&Get(st.arr, 2*i).update)
-		(update).Push(&Get(st.arr, 2*i+1).update)
-	}
-	(Get(st.arr, i).update).ApplyUpdate(&Get(st.arr, i).value)
-	Get(st.arr, i).update = st.zeroUpdate
-}
-
-func (st SegmentTree[value, update]) rebuild(
-	i int,
-) {
-	i += st.n
-	i /= 2
-	for i != 0 {
-		left := Get(st.arr, 2*i)
-		(left.update).ApplyUpdate(&left.value)
-		right := Get(st.arr, 2*i+1)
-		(right.update).ApplyUpdate(&right.value)
-		Get(st.arr, i).value = left.value.Merge(right.value)
-		i = i / 2
-	}
-}
-//package hackercup
-//file ..//hackercup/go
-
-
-
-func Hackercup(
-	stdin *Reader,
-	stdout *Writer,
-) {
-	start := time.Now()
-	defer Recover()
-	defer func() {
-		stdout.WriteAll()
-		time.Sleep(time.Millisecond)
-		fmt.Fprintf(os.Stderr, "done! took %s\n", time.Since(start))
-	}()
-
-	PrintSeconds()
-	tests := stdin.Uint()
-	outputs := make([]output, tests)
-	testWGs := make([]sync.WaitGroup, tests)
-
-	for i := range tests {
-		testWGs[i].Add(1)
-	}
-
-	doneCounter := atomic.Uint64{}
-	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
-	Go(func() {
-		for i := range tests {
-			input := input{}
-			input.Read(stdin)
-			Go(func() {
-				start := time.Now()
-				outputs[i] = solve(int(i), &input)
-				testWGs[i].Done()
-				doneCnt := doneCounter.Add(1)
-				fmt.Fprintf(
-					os.Stderr,
-					"test %d (%d/%d) took %s\n",
-					i+1,
-					doneCnt,
-					tests,
-					time.Since(start),
-				)
-			})
-		}
-	})
-
-	for i := range tests {
-		testWGs[i].Wait()
-		stdout.Printf("Case #%d: ", i+1)
-		outputs[i].Print(stdout)
-	}
-}
-//package hackercup
-//file ..//hackercup/io.go
-
-
-
-type input struct {
-	N int
-	S string
-}
-
-func (input *input) Read(stdin *Reader) {
-	input.N = stdin.Int()
-	input.S = stdin.String()
-}
-
-type output struct {
-	alice bool
-}
-
-func (output *output) Print(stdout *Writer) {
-	if output.alice {
-		stdout.String("Alice\n")
-	} else {
-		stdout.String("Bob\n")
-	}
-}
-//package hackercup
-//file ..//hackercup/solve.go
-
-
-
-func solve(test int, input *input) output {
-	s := []byte("X" + input.S + "X")
-	N := input.N
-	al := make([]int, N+2)
-	br := make([]int, N+2)
-	queue := make([][]Pair[int, int], N+4)
-	for i := 0; i < N+2; i++ {
-		al[i] = 0
-		br[i] = N + 1
-		queue[i+1] = append(queue[i+1], Pair[int, int]{X: 0, Y: i})
-		queue[N+2-i] = append(queue[N+2-i], Pair[int, int]{X: 1, Y: i})
-	}
-	for i := 1; i <= N; i++ {
-		if s[i] == 'A' {
-			al[i] = i
-			queue[1] = append(queue[1], Pair[int, int]{X: 0, Y: i})
-		} else {
-			br[i] = i
-			queue[1] = append(queue[1], Pair[int, int]{X: 1, Y: i})
-		}
-	}
-	for dist := 1; dist <= N; dist++ {
-		for len(queue[dist]) > 0 {
-			el := queue[dist][0]
-			queue[dist] = queue[dist][1:]
-			if el.X == 0 {
-				r := el.Y
-				l := al[r]
-				if r-l+1 != dist {
-					continue
-				}
-				if r == N+1 {
-					continue
-				}
-				if s[r+1] == 'A' {
-					if al[r+1] < l {
-						al[r+1] = l
-						queue[dist+1] = append(queue[dist+1], Pair[int, int]{X: 0, Y: r + 1})
-					}
-				} else if l != r {
-					if br[l+1] > r+1 {
-						br[l+1] = r + 1
-						queue[dist] = append(queue[dist], Pair[int, int]{X: 1, Y: l + 1})
-					}
-				}
-			} else {
-				l := el.Y
-				r := br[l]
-				if r-l+1 != dist {
-					continue
-				}
-				if l == 0 {
-					continue
-				}
-				if s[l-1] == 'B' {
-					if br[l-1] > r {
-						br[l-1] = r
-						queue[dist+1] = append(queue[dist+1], Pair[int, int]{X: 1, Y: l - 1})
-					}
-				} else if l != r {
-					if al[r-1] < l-1 {
-						al[r-1] = l - 1
-						queue[dist] = append(queue[dist], Pair[int, int]{X: 0, Y: r - 1})
-					}
-				}
-			}
-		}
-	}
-
-	return output{
-		alice: al[N] >= 1,
-	}
-}
-
-func arit(a, b int) int {
-	avg2 := (a + b)
-	return (avg2 * (b - a + 1)) / 2
-}
-
-func matrixPower(m [][]int, p int) [][]int {
-	n := len(m)
-	ret := make([][]int, n)
-	for i := range n {
-		ret[i] = make([]int, n)
-		ret[i][i] = 1
-	}
-	for p != 0 {
-		if p%2 == 1 {
-			ret = matrixMultiply(ret, m)
-		}
-		m = matrixMultiply(m, m)
-		p /= 2
-	}
-	return ret
-}
-
-func matrixMultiply(a, b [][]int) [][]int {
-	n := len(a)
-	result := make([][]int, n)
-	for i := range n {
-		result[i] = make([]int, n)
-	}
-	for i := range n {
-		for j := range n {
-			if a[i][j] == 0 {
-				continue
-			}
-			for k := range n {
-				result[i][k] += a[i][j] * b[j][k]
-				if result[i][k] >= mod {
-					result[i][k] %= mod
-				}
-			}
-		}
-	}
-	return result
-}
-
-const mod = 1_000_000_007
 //package hash_map
 //file ..//hash_map/go
 
@@ -1241,6 +835,444 @@ func PrintSeconds() {
 			fmt.Fprintf(os.Stderr, "%ds passed\n", (time.Since(start)+time.Second/2)/time.Second)
 		}
 	}()
+}
+//package hackercup
+//file ..//hackercup/go
+
+
+
+func Hackercup(
+	stdin *Reader,
+	stdout *Writer,
+) {
+	start := time.Now()
+	defer Recover()
+	defer func() {
+		stdout.WriteAll()
+		time.Sleep(time.Millisecond)
+		fmt.Fprintf(os.Stderr, "done! took %s\n", time.Since(start))
+	}()
+
+	PrintSeconds()
+	tests := stdin.Uint()
+	outputs := make([]output, tests)
+	testWGs := make([]sync.WaitGroup, tests)
+
+	for i := range tests {
+		testWGs[i].Add(1)
+	}
+
+	doneCounter := atomic.Uint64{}
+	fmt.Fprintf(os.Stderr, "running %d tests\n", tests)
+	Go(func() {
+		for i := range tests {
+			input := input{}
+			input.Read(stdin)
+			Go(func() {
+				start := time.Now()
+				outputs[i] = solve(int(i), &input)
+				testWGs[i].Done()
+				doneCnt := doneCounter.Add(1)
+				fmt.Fprintf(
+					os.Stderr,
+					"test %d (%d/%d) took %s\n",
+					i+1,
+					doneCnt,
+					tests,
+					time.Since(start),
+				)
+			})
+		}
+	})
+
+	for i := range tests {
+		testWGs[i].Wait()
+		stdout.Printf("Case #%d: ", i+1)
+		outputs[i].Print(stdout)
+	}
+}
+//package hackercup
+//file ..//hackercup/io.go
+
+
+
+type input struct {
+	N int
+	S string
+}
+
+func (input *input) Read(stdin *Reader) {
+	input.N = stdin.Int()
+	input.S = stdin.String()
+}
+
+type output struct {
+	alice bool
+}
+
+func (output *output) Print(stdout *Writer) {
+	if output.alice {
+		stdout.String("Alice\n")
+	} else {
+		stdout.String("Bob\n")
+	}
+}
+//package hackercup
+//file ..//hackercup/solve.go
+
+
+
+func solve(test int, input *input) output {
+	s := []byte("X" + input.S + "X")
+	N := input.N
+	al := make([]int, N+2)
+	br := make([]int, N+2)
+	queue := make([][]Pair[int, int], N+4)
+	for i := 0; i < N+2; i++ {
+		al[i] = 0
+		br[i] = N + 1
+		queue[i+1] = append(queue[i+1], Pair[int, int]{X: 0, Y: i})
+		queue[N+2-i] = append(queue[N+2-i], Pair[int, int]{X: 1, Y: i})
+	}
+	for i := 1; i <= N; i++ {
+		if s[i] == 'A' {
+			al[i] = i
+			queue[1] = append(queue[1], Pair[int, int]{X: 0, Y: i})
+		} else {
+			br[i] = i
+			queue[1] = append(queue[1], Pair[int, int]{X: 1, Y: i})
+		}
+	}
+	for dist := 1; dist <= N; dist++ {
+		for len(queue[dist]) > 0 {
+			el := queue[dist][0]
+			queue[dist] = queue[dist][1:]
+			if el.X == 0 {
+				r := el.Y
+				l := al[r]
+				if r-l+1 != dist {
+					continue
+				}
+				if r == N+1 {
+					continue
+				}
+				if s[r+1] == 'A' {
+					if al[r+1] < l {
+						al[r+1] = l
+						queue[dist+1] = append(queue[dist+1], Pair[int, int]{X: 0, Y: r + 1})
+					}
+				} else if l != r {
+					if br[l+1] > r+1 {
+						br[l+1] = r + 1
+						queue[dist] = append(queue[dist], Pair[int, int]{X: 1, Y: l + 1})
+					}
+				}
+			} else {
+				l := el.Y
+				r := br[l]
+				if r-l+1 != dist {
+					continue
+				}
+				if l == 0 {
+					continue
+				}
+				if s[l-1] == 'B' {
+					if br[l-1] > r {
+						br[l-1] = r
+						queue[dist+1] = append(queue[dist+1], Pair[int, int]{X: 1, Y: l - 1})
+					}
+				} else if l != r {
+					if al[r-1] < l-1 {
+						al[r-1] = l - 1
+						queue[dist] = append(queue[dist], Pair[int, int]{X: 0, Y: r - 1})
+					}
+				}
+			}
+		}
+	}
+
+	return output{
+		alice: al[N] >= 1,
+	}
+}
+
+func arit(a, b int) int {
+	avg2 := (a + b)
+	return (avg2 * (b - a + 1)) / 2
+}
+
+func matrixPower(m [][]int, p int) [][]int {
+	n := len(m)
+	ret := make([][]int, n)
+	for i := range n {
+		ret[i] = make([]int, n)
+		ret[i][i] = 1
+	}
+	for p != 0 {
+		if p%2 == 1 {
+			ret = matrixMultiply(ret, m)
+		}
+		m = matrixMultiply(m, m)
+		p /= 2
+	}
+	return ret
+}
+
+func matrixMultiply(a, b [][]int) [][]int {
+	n := len(a)
+	result := make([][]int, n)
+	for i := range n {
+		result[i] = make([]int, n)
+	}
+	for i := range n {
+		for j := range n {
+			if a[i][j] == 0 {
+				continue
+			}
+			for k := range n {
+				result[i][k] += a[i][j] * b[j][k]
+				if result[i][k] >= mod {
+					result[i][k] %= mod
+				}
+			}
+		}
+	}
+	return result
+}
+
+const mod = 1_000_000_007
+//package segment_tree_iter
+//file ..//segment_tree_iter/go
+
+
+
+type segmentTreeNode[value, update any] struct {
+	value  value
+	update update
+}
+
+type SegmentTree[
+	value interface{ Merge(value) value },
+	update interface {
+		ApplyUpdate(*value)
+		Push(*update)
+	},
+] struct {
+	log2n      int
+	n          int // power of two, number of leaves
+	arr        []segmentTreeNode[value, update]
+	zeroValue  value
+	zeroUpdate update
+}
+
+func NewSegmentTree[
+	value interface{ Merge(value) value },
+	update interface {
+		ApplyUpdate(*value)
+		Push(*update)
+	},
+](
+	init func(int) value,
+	size int,
+	zeroValue value,
+	zeroUpdate update,
+) *SegmentTree[value, update] {
+	if size <= 0 {
+		panic("size must be positive")
+	}
+	log2n := LogCeil(uint64(size))
+	n := 1 << log2n
+	arr := make([]segmentTreeNode[value, update], 2*n)
+	for i := range size {
+		*Get(arr, n+i) = segmentTreeNode[value, update]{init(i), zeroUpdate}
+	}
+	for i := size; i < n; i++ {
+		*Get(arr, n+i) = segmentTreeNode[value, update]{zeroValue, zeroUpdate}
+	}
+	for i := n - 1; i > 0; i-- {
+		*Get(arr, i) = segmentTreeNode[value, update]{(Get(arr, 2*i).value).Merge(Get(arr, 2*i+1).value), zeroUpdate}
+	}
+	return &SegmentTree[value, update]{
+		log2n:      log2n,
+		n:          n,
+		arr:        arr,
+		zeroValue:  zeroValue,
+		zeroUpdate: zeroUpdate,
+	}
+}
+
+/*
+n = 16 log2n = 4
+
+0 |  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1  1
+1 |  2  2  2  2  2  2  2  2  3  3  3  3  3  3  3  3
+2 |  4  4  4  4  5  5  5  5  6  6  6  6  7  7  7  7
+3 |  8  8  9  9 10 10 11 11 12 12 13 13 14 14 15 15
+4 | 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+
+	[0 ... val(i) ... size-1] [size ... zero ... n]
+*/
+
+func (st SegmentTree[value, update]) SetValue(
+	i int,
+	val value,
+) {
+	if i < 0 || i >= st.n {
+		panic("index out of bounds")
+	}
+	st.pushUpdates(i)
+	(*Get(st.arr, i+st.n)).value = val
+	(*Get(st.arr, i+st.n)).update = st.zeroUpdate
+	st.rebuild(i)
+}
+
+func (st SegmentTree[value, update]) Update(
+	l, r int,
+	upd update,
+) {
+	l = max(l, 0)
+	r = min(r, st.n-1)
+	if l > r {
+		return
+	}
+
+	st.pushUpdates(l)
+	st.pushUpdates(r)
+	{
+		l, r := l+st.n, r+st.n
+		for l <= r {
+			if l%2 == 1 {
+				(upd).Push(&(*Get(st.arr, l)).update)
+				l = l/2 + 1
+			} else {
+				l = l / 2
+			}
+			if r%2 == 0 {
+				(upd).Push(&(*Get(st.arr, r)).update)
+				r = r/2 - 1
+			} else {
+				r = r / 2
+			}
+		}
+	}
+	st.rebuild(l)
+	st.rebuild(r)
+}
+
+func (st SegmentTree[value, update]) Get(
+	l, r int,
+) value {
+	l = max(l, 0)
+	r = min(r, st.n-1)
+	if l > r {
+		return st.zeroValue
+	}
+	st.pushUpdates(l)
+	st.pushUpdates(r)
+	summedL := st.zeroValue
+	summedR := st.zeroValue
+	l, r = l+st.n, r+st.n
+	for l <= r {
+		if l%2 == 1 {
+			// apply update on-the-fly without copying node back
+			(Get(st.arr, l).update).ApplyUpdate(&Get(st.arr, l).value)
+			summedL = summedL.Merge((*Get(st.arr, l)).value)
+			l = l/2 + 1
+		} else {
+			l = l / 2
+		}
+		if r%2 == 0 {
+			(Get(st.arr, r).update).ApplyUpdate(&Get(st.arr, r).value)
+			summedR = Get(st.arr, r).value.Merge(summedR)
+			r = r/2 - 1
+		} else {
+			r = r / 2
+		}
+	}
+	return summedL.Merge(summedR)
+}
+
+func (st SegmentTree[value, update]) LongestRangeWherePredicate(
+	rMax int,
+	predicate func(value) bool,
+) (int, bool) {
+	if rMax < 0 || rMax >= st.n {
+		panic("invalid rMax")
+	}
+
+	st.pushUpdates(rMax)
+	i := rMax + st.n
+	if !predicate(Get(st.arr, i).value) {
+		return -1, false
+	}
+	summedValue := st.zeroValue
+	for i > 0 {
+		arrVal := Get(st.arr, i)
+		(arrVal.update).ApplyUpdate(&arrVal.value)
+		val := arrVal.value.Merge(summedValue)
+		if predicate(val) {
+			if IsPowerOf2(i) {
+				return 0, true
+			}
+			if i%2 == 0 {
+				i = i/2 - 1
+				summedValue = val.Merge(summedValue)
+			} else {
+				i = i / 2
+			}
+		} else {
+			break
+		}
+	}
+
+	upd := Get(st.arr, i).update
+	for i < st.n {
+		val := Get(st.arr, 2*i+1)
+		(upd).Push(&val.update)
+		(upd).ApplyUpdate(&val.value)
+		combined := val.value.Merge(summedValue)
+		if predicate(combined) {
+			summedValue = combined
+			i = 2 * i
+		} else {
+			upd = val.update
+			i = 2*i + 1
+		}
+	}
+	return i - st.n + 1, true
+}
+
+func (st SegmentTree[value, update]) pushUpdates(
+	i int,
+) {
+	i += st.n
+	for shift := st.log2n; shift > 0; shift-- {
+		i := i >> shift
+		update := Get(st.arr, i).update
+
+		Get(st.arr, i).update = st.zeroUpdate
+		(update).ApplyUpdate(&Get(st.arr, i).value)
+
+		(update).Push(&Get(st.arr, 2*i).update)
+		(update).Push(&Get(st.arr, 2*i+1).update)
+	}
+	(Get(st.arr, i).update).ApplyUpdate(&Get(st.arr, i).value)
+	Get(st.arr, i).update = st.zeroUpdate
+}
+
+func (st SegmentTree[value, update]) rebuild(
+	i int,
+) {
+	i += st.n
+	i /= 2
+	for i != 0 {
+		left := Get(st.arr, 2*i)
+		(left.update).ApplyUpdate(&left.value)
+		right := Get(st.arr, 2*i+1)
+		(right.update).ApplyUpdate(&right.value)
+		Get(st.arr, i).value = left.value.Merge(right.value)
+		i = i / 2
+	}
 }
 //package utils
 //file ..//utils/go

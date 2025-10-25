@@ -40,6 +40,16 @@ func SolveA(
 	stdin *fastio.Reader,
 	stdout *fastio.Writer,
 ) {
+	t := stdin.Int()
+	for range t {
+		solveATest(stdin, stdout)
+	}
+}
+
+func solveATest(
+	stdin *fastio.Reader,
+	stdout *fastio.Writer,
+) {
 
 	n := stdin.Int()
 	a := hash_map.NewHashTable[int, intHash, int](0)
@@ -55,7 +65,8 @@ func SolveA(
 		},
 		n,
 		stValue{
-			minA: math.MaxInt,
+			minA:  math.MaxInt,
+			minDP: math.MaxInt,
 		},
 		lazy{},
 	)
@@ -84,3 +95,24 @@ func SolveA(
 	}
 	stdout.Int(dp.Get(n-1), '\n')
 }
+
+/*input
+4
+5
+3 1 4 1 5
+10
+9 2 6 5 3 5 8 9 7 9
+8
+1 2 3 4 5 6 7 8
+2
+1 1000000000000000000
+
+*/
+
+/*output
+2
+4
+5
+2
+
+*/

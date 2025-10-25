@@ -26,50 +26,38 @@ func main() {
 	PrintSliceG1XOfint(T)
 	{
 		type T struct{}
-		var X []XG1T
-		PrintSliceG1XOfT(X)
+		var X []X[T]
+		PrintSlice(X)
 	}
 	{
 		type T struct{}
-		var X []XG1XOfT
-		PrintSliceG1XOfXOfT(X)
+		var X []X[X[T]]
+		PrintSlice(X)
 	}
 	{
 		type X struct{}
 		var T []X
-		PrintSliceG1X(T)
+		PrintSlice(T)
 	}
 	var X []XG1int
 	PrintSliceG1XOfint(X)
 }
-func TG1XOfXOfint(T []XG1XOfint,
+func PrintSliceG1XOfXOfint(X []XG1XOfint) {
+	for _, X := range X {
+		fmt.Println(X)
+	}
+}
+func PrintSliceG1XOfint(X []XG1int,
 
 ) {
+	for _, X := range X {
+		fmt.Println(X)
+	}
+}
+func TG1XOfXOfint(T []XG1XOfint) {
 	for _, T := range T {
 		fmt.
 			Println(T)
-	}
-}
-func PrintSliceG1XOfint(X []XG1int) {
-	for _, X := range X {
-		fmt.Println(X)
-	}
-}
-
-type XG1T struct {
-	Value T
-}
-
-func PrintSliceG1XOfT(X []XG1T) {
-	for _, X := range X {
-		fmt.Println(X)
-	}
-}
-func PrintSliceG1X(X []X,
-
-) {
-	for _, X := range X {
-		fmt.Println(X)
 	}
 }
 
@@ -78,18 +66,4 @@ type XG1XOfint struct {
 }
 type XG1int struct {
 	Value int
-}
-type XG1XOfT struct {
-	Value XG1XOfT
-}
-
-func PrintSliceG1XOfXOfT(X []XG1XOfT) {
-	for _, X := range X {
-		fmt.Println(X)
-	}
-}
-func PrintSliceG1XOfXOfint(X []XG1XOfint) {
-	for _, X := range X {
-		fmt.Println(X)
-	}
 }

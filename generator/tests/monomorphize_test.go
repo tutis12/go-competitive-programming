@@ -6,6 +6,7 @@ import (
 	"io"
 	"main/generator/monomorphize"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +54,18 @@ func testCase(
 	}
 
 	if string(output) != string(expected) {
+		// find first line where mismatch occurs
+		outputLines := strings.Split(string(output), "\n")
+		expectedLines := strings.Split(string(expected), "\n")
+		for i := 0; i < len(expectedLines) && i < len(outputLines); i++ {
+			if outputLines[i] != expectedLines[i] {
+				fmt.Printf("Mismatch found at line %d:\n", i+1)
+				fmt.Printf("Expected: %q\n", expectedLines[i])
+				fmt.Printf("Got: %q\n", outputLines[i])
+				break
+			}
+		}
+		fmt.Printf("Full output:\n")
 		fmt.Println(string(output))
 		panic("mismatch in " + name)
 	}
