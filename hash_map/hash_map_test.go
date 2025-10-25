@@ -5,12 +5,6 @@ import (
 	"testing"
 )
 
-type intHasher int
-
-func (x intHasher) Hash() uint64 {
-	return uint64(x)
-}
-
 func BenchmarkHashMap(b *testing.B) {
 	a := make([]int, b.N)
 	for i := 0; i < b.N; i++ {

@@ -3,7 +3,6 @@ package hash_map
 import (
 	"main/utils"
 	"math/rand/v2"
-	"unsafe"
 )
 
 const (
@@ -11,17 +10,24 @@ const (
 	checkHashFirst = false
 )
 
+type intHasher struct{}
+
+func (x intHasher) Hash(key int) uint64 {
+	return uint64(key)
+}
+
 type hashTableEntry[K comparable, V any] struct {
 	hash  uint64
 	key   K
 	value V
 }
 
-type Hasher interface {
-	Hash() uint64
+type Hasher[K comparable] interface {
+	~struct{}
+	Hash(K) uint64
 }
 
-type HashTable[K comparable, H Hasher, V any] struct {
+type HashTable[K comparable, H Hasher[K], V any] struct {
 	entries1 []hashTableEntry[K, V]
 	entries2 [][]hashTableEntry[K, V]
 	log2Size int
@@ -30,7 +36,7 @@ type HashTable[K comparable, H Hasher, V any] struct {
 	count    int
 }
 
-func NewHashTable[K comparable, H Hasher, V any](
+func NewHashTable[K comparable, H Hasher[K], V any](
 	size int,
 ) *HashTable[K, H, V] {
 	log2Size := utils.LogCeil(uint64(size*2 + 1))
@@ -45,7 +51,7 @@ func NewHashTable[K comparable, H Hasher, V any](
 }
 
 func (hm *HashTable[K, H, V]) hash(key K) uint64 {
-	val := (*(*H)(unsafe.Pointer(&key))).Hash()
+	val := H{}.Hash(key)
 	if val == 0 {
 		return 1
 	} else {
