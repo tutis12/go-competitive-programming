@@ -9,32 +9,34 @@ type segmentTreeNode[value, update any] struct {
 	update update
 }
 
+type Controller[value any, update any] interface {
+	~struct{}
+	Merge(value, value) value
+	ApplyUpdate(update, *value)
+	Push(update, *update)
+	ZeroValue() value
+	ZeroUpdate() update
+	Predicate(value) bool
+}
+
 type SegmentTree[
-	value interface{ Merge(value) value },
-	update interface {
-		ApplyUpdate(*value)
-		Push(*update)
-	},
+	value any,
+	update any,
+	controller Controller[value, update],
 ] struct {
-	log2n      int
-	n          int // power of two, number of leaves
-	arr        []segmentTreeNode[value, update]
-	zeroValue  value
-	zeroUpdate update
+	log2n int
+	n     int // power of two, number of leaves
+	arr   []segmentTreeNode[value, update]
 }
 
 func NewSegmentTree[
-	value interface{ Merge(value) value },
-	update interface {
-		ApplyUpdate(*value)
-		Push(*update)
-	},
+	value any,
+	update any,
+	controller Controller[value, update],
 ](
 	init func(int) value,
 	size int,
-	zeroValue value,
-	zeroUpdate update,
-) *SegmentTree[value, update] {
+) *SegmentTree[value, update, controller] {
 	if size <= 0 {
 		panic("size must be positive")
 	}
@@ -45,27 +47,25 @@ func NewSegmentTree[
 	for i := range size {
 		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{
 			value:  init(i),
-			update: zeroUpdate,
+			update: controller{}.ZeroUpdate(),
 		}
 	}
 	for i := size; i < n; i++ {
 		*utils.Get(arr, n+i) = segmentTreeNode[value, update]{
-			value:  zeroValue,
-			update: zeroUpdate,
+			value:  controller{}.ZeroValue(),
+			update: controller{}.ZeroUpdate(),
 		}
 	}
 	for i := n - 1; i > 0; i-- {
 		*utils.Get(arr, i) = segmentTreeNode[value, update]{
-			value:  (utils.Get(arr, 2*i).value).Merge(utils.Get(arr, 2*i+1).value),
-			update: zeroUpdate,
+			value:  controller{}.Merge((utils.Get(arr, 2*i).value), (utils.Get(arr, 2*i+1).value)),
+			update: controller{}.ZeroUpdate(),
 		}
 	}
-	return &SegmentTree[value, update]{
-		log2n:      log2n,
-		n:          n,
-		arr:        arr,
-		zeroValue:  zeroValue,
-		zeroUpdate: zeroUpdate,
+	return &SegmentTree[value, update, controller]{
+		log2n: log2n,
+		n:     n,
+		arr:   arr,
 	}
 }
 
@@ -81,7 +81,7 @@ n = 16 log2n = 4
 	[0 ... val(i) ... size-1] [size ... zero ... n]
 */
 
-func (st *SegmentTree[value, update]) SetValue(
+func (st *SegmentTree[value, update, controller]) SetValue(
 	i int,
 	val value,
 ) {
@@ -89,12 +89,13 @@ func (st *SegmentTree[value, update]) SetValue(
 		panic("index out of bounds")
 	}
 	st.pushUpdates(i)
-	(*utils.Get(st.arr, i+st.n)).value = val
-	(*utils.Get(st.arr, i+st.n)).update = st.zeroUpdate
+	valI := utils.Get(st.arr, i+st.n)
+	valI.value = val
+	valI.update = controller{}.ZeroUpdate()
 	st.rebuild(i)
 }
 
-func (st *SegmentTree[value, update]) Update(
+func (st *SegmentTree[value, update, controller]) Update(
 	l, r int,
 	upd update,
 ) {
@@ -110,13 +111,13 @@ func (st *SegmentTree[value, update]) Update(
 		l, r := l+st.n, r+st.n
 		for l <= r {
 			if l%2 == 1 {
-				(upd).Push(&(*utils.Get(st.arr, l)).update)
+				controller{}.Push(upd, &(*utils.Get(st.arr, l)).update)
 				l = l/2 + 1
 			} else {
 				l = l / 2
 			}
 			if r%2 == 0 {
-				(upd).Push(&(*utils.Get(st.arr, r)).update)
+				controller{}.Push(upd, &(*utils.Get(st.arr, r)).update)
 				r = r/2 - 1
 			} else {
 				r = r / 2
@@ -127,42 +128,42 @@ func (st *SegmentTree[value, update]) Update(
 	st.rebuild(r)
 }
 
-func (st *SegmentTree[value, update]) Get(
+func (st *SegmentTree[value, update, controller]) Get(
 	l, r int,
 ) value {
 	l = max(l, 0)
 	r = min(r, st.n-1)
 	if l > r {
-		return st.zeroValue
+		return controller{}.ZeroValue()
 	}
 	st.pushUpdates(l)
 	st.pushUpdates(r)
-	summedL := st.zeroValue
-	summedR := st.zeroValue
+	summedL := controller{}.ZeroValue()
+	summedR := controller{}.ZeroValue()
 	l, r = l+st.n, r+st.n
 	for l <= r {
 		if l%2 == 1 {
-			// apply update on-the-fly without copying node back
-			(utils.Get(st.arr, l).update).ApplyUpdate(&utils.Get(st.arr, l).value)
-			summedL = summedL.Merge((*utils.Get(st.arr, l)).value)
+			valL := utils.Get(st.arr, l)
+			controller{}.ApplyUpdate(valL.update, &valL.value)
+			summedL = controller{}.Merge(summedL, valL.value)
 			l = l/2 + 1
 		} else {
 			l = l / 2
 		}
 		if r%2 == 0 {
-			(utils.Get(st.arr, r).update).ApplyUpdate(&utils.Get(st.arr, r).value)
-			summedR = utils.Get(st.arr, r).value.Merge(summedR)
+			valR := utils.Get(st.arr, r)
+			controller{}.ApplyUpdate(valR.update, &valR.value)
+			summedR = controller{}.Merge(valR.value, summedR)
 			r = r/2 - 1
 		} else {
 			r = r / 2
 		}
 	}
-	return summedL.Merge(summedR)
+	return controller{}.Merge(summedL, summedR)
 }
 
-func (st *SegmentTree[value, update]) LongestRangeWherePredicate(
+func (st *SegmentTree[value, update, controller]) LongestRangeWherePredicate(
 	rMax int,
-	predicate func(value) bool,
 ) (int, bool) {
 	if rMax < 0 || rMax >= st.n {
 		panic("invalid rMax")
@@ -170,21 +171,21 @@ func (st *SegmentTree[value, update]) LongestRangeWherePredicate(
 
 	st.pushUpdates(rMax)
 	i := rMax + st.n
-	if !predicate(utils.Get(st.arr, i).value) {
+	if !(controller{}).Predicate(utils.Get(st.arr, i).value) {
 		return -1, false
 	}
-	summedValue := st.zeroValue
+	summedValue := controller{}.ZeroValue()
 	for i > 0 {
 		arrVal := *utils.Get(st.arr, i)
-		(arrVal.update).ApplyUpdate(&arrVal.value)
-		val := arrVal.value.Merge(summedValue)
-		if predicate(val) {
+		controller{}.ApplyUpdate(arrVal.update, &arrVal.value)
+		val := controller{}.Merge(arrVal.value, summedValue)
+		if (controller{}).Predicate(val) {
 			if utils.IsPowerOf2(i) {
 				return 0, true
 			}
 			if i%2 == 0 {
 				i = i/2 - 1
-				summedValue = val.Merge(summedValue)
+				summedValue = controller{}.Merge(val, summedValue)
 			} else {
 				i = i / 2
 			}
@@ -196,10 +197,10 @@ func (st *SegmentTree[value, update]) LongestRangeWherePredicate(
 	upd := utils.Get(st.arr, i).update
 	for i < st.n {
 		val := *utils.Get(st.arr, 2*i+1)
-		(upd).Push(&val.update)
-		(upd).ApplyUpdate(&val.value)
-		combined := val.value.Merge(summedValue)
-		if predicate(combined) {
+		controller{}.Push(upd, &val.update)
+		controller{}.ApplyUpdate(upd, &val.value)
+		combined := controller{}.Merge(val.value, summedValue)
+		if (controller{}).Predicate(combined) {
 			summedValue = combined
 			i = 2 * i
 		} else {
@@ -210,7 +211,7 @@ func (st *SegmentTree[value, update]) LongestRangeWherePredicate(
 	return i - st.n + 1, true
 }
 
-func (st *SegmentTree[value, update]) pushUpdates(
+func (st *SegmentTree[value, update, controller]) pushUpdates(
 	i int,
 ) {
 	i += st.n
@@ -218,27 +219,28 @@ func (st *SegmentTree[value, update]) pushUpdates(
 		i := i >> shift
 		update := utils.Get(st.arr, i).update
 
-		utils.Get(st.arr, i).update = st.zeroUpdate
-		(update).ApplyUpdate(&utils.Get(st.arr, i).value)
+		utils.Get(st.arr, i).update = controller{}.ZeroUpdate()
+		controller{}.ApplyUpdate(update, &utils.Get(st.arr, i).value)
 
-		(update).Push(&utils.Get(st.arr, 2*i).update)
-		(update).Push(&utils.Get(st.arr, 2*i+1).update)
+		controller{}.Push(update, &utils.Get(st.arr, 2*i).update)
+		controller{}.Push(update, &utils.Get(st.arr, 2*i+1).update)
 	}
-	(utils.Get(st.arr, i).update).ApplyUpdate(&utils.Get(st.arr, i).value)
-	utils.Get(st.arr, i).update = st.zeroUpdate
+	valI := utils.Get(st.arr, i)
+	controller{}.ApplyUpdate(valI.update, &valI.value)
+	valI.update = controller{}.ZeroUpdate()
 }
 
-func (st *SegmentTree[value, update]) rebuild(
+func (st *SegmentTree[value, update, controller]) rebuild(
 	i int,
 ) {
 	i += st.n
 	i /= 2
 	for i != 0 {
 		left := *utils.Get(st.arr, 2*i)
-		(left.update).ApplyUpdate(&left.value)
+		controller{}.ApplyUpdate(left.update, &left.value)
 		right := *utils.Get(st.arr, 2*i+1)
-		(right.update).ApplyUpdate(&right.value)
-		utils.Get(st.arr, i).value = left.value.Merge(right.value)
+		controller{}.ApplyUpdate(right.update, &right.value)
+		utils.Get(st.arr, i).value = controller{}.Merge(left.value, right.value)
 		i = i / 2
 	}
 }

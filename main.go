@@ -12,10 +12,10 @@ const (
 )
 
 func main() {
-	var stdin = &fastio.Reader{
+	var stdin = fastio.Reader{
 		File: os.Stdin,
 	}
-	var stdout = &fastio.Writer{
+	var stdout = fastio.Writer{
 		File: os.Stdout,
 	}
 
@@ -35,8 +35,8 @@ func main() {
 	defer stdout.WriteAll()
 	defer debug.ExitOnPanic()
 
-	//hackercup.Hackercup(stdin, stdout)
-	SolveX(stdin, stdout)
+	//hackercup.Hackercup(&stdin, &stdout)
+	SolveX(&stdin, &stdout)
 }
 
 /*input

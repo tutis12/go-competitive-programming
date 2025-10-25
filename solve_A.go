@@ -2,7 +2,6 @@ package main
 
 import (
 	"main/fastio"
-	"main/segment_tree_iter"
 	"math"
 )
 
@@ -15,24 +14,39 @@ func (x intHash) Hash() uint64 {
 }
 
 type stValue struct {
-	minA  int
-	minDP int
+	minA int
 }
 
 type lazy struct {
-	addDP int
 }
 
-func (a stValue) Merge(b stValue) stValue {
-	return stValue{minA: min(a.minA, b.minA), minDP: min(a.minDP, b.minDP)}
+type controller struct {
 }
 
-func (up lazy) ApplyUpdate(val *stValue) {
-	val.minDP += up.addDP
+func (controller) Merge(a, b stValue) stValue {
+	return stValue{minA: min(a.minA, b.minA)}
 }
 
-func (top lazy) Push(existing *lazy) {
-	existing.addDP += top.addDP
+func (controller) ZeroValue() stValue {
+	return stValue{
+		minA: math.MaxInt64,
+	}
+}
+
+func (controller) ZeroUpdate() lazy {
+	return lazy{}
+}
+func (controller) ApplyUpdate(update lazy, val *stValue) {
+}
+
+func (controller) Push(update lazy, existing *lazy) {
+}
+
+var globalCost int
+var globalAi int
+
+func (controller) Predicate(x stValue) bool {
+	return x.minA*globalCost >= globalAi
 }
 
 func SolveA(
@@ -49,46 +63,62 @@ func solveATest(
 	stdin *fastio.Reader,
 	stdout *fastio.Writer,
 ) {
-
 	n := stdin.Int()
 	a := stdin.Ints(n, 0)
-	st := *segment_tree_iter.NewSegmentTree(
-		func(i int) stValue {
-			return stValue{
-				minA:  a[i],
-				minDP: 0,
-			}
-		},
-		n,
-		stValue{
-			minA:  math.MaxInt,
-			minDP: math.MaxInt,
-		},
-		lazy{},
-	)
-
-	dp := make([]int, n)
+	const maxDP = 128
+	dp := [maxDP + 1]int{}
+	for i := range dp {
+		dp[i] = -1
+	}
+	stack := make([]int, 0, n+1)
+	stack = append(stack, -1)
 	for i := range n {
 		ai := a[i]
-		dp[i] = i + 1
-		for cost := 1; cost <= 3; cost++ {
-			l, _ := st.LongestRangeWherePredicate(i, func(x stValue) bool {
-				return x.minA*cost >= ai
-			})
+		dpI := i + 1
+		dpJ := 0
+		for len(stack) != 1 && a[stack[len(stack)-1]] >= ai {
+			stack = stack[:len(stack)-1]
+		}
+		stack = append(stack, i)
+		for cost := 3; cost >= 1; cost-- {
+			globalCost = cost
+			globalAi = ai
+			var l int
+			if cost != 1 {
+				lo := 0
+				hi := len(stack) - 1
+				for lo < hi {
+					mid := (lo + hi + 1) / 2
+					if a[stack[mid]]*cost < ai {
+						lo = mid
+					} else {
+						hi = mid - 1
+					}
+				}
+				l = stack[lo] + 1
+			} else {
+				l = stack[len(stack)-2] + 1
+			}
 			var total int
 			if l == 0 {
 				total = cost
 			} else {
-				total = st.Get(l-1, i-1).minDP + cost
+				for dp[dpJ] < l-1 {
+					dpJ++
+				}
+				total = dpJ + cost
 			}
-			dp[i] = min(dp[i], total)
+			dpI = min(dpI, total)
 		}
-		st.SetValue(i, stValue{
-			minA:  ai,
-			minDP: dp[i],
-		})
+		for j := dpI; j <= maxDP; j++ {
+			dp[j] = i
+		}
 	}
-	stdout.Int(dp[n-1], '\n')
+	ans := 0
+	for dp[ans] < n-1 {
+		ans++
+	}
+	stdout.Int(ans, '\n')
 }
 
 /*input
