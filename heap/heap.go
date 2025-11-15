@@ -5,7 +5,9 @@ type MinHeap[T any] struct {
 	less func(a, b T) bool
 }
 
-func NewMinHeap[T any](less func(a, b T) bool) *MinHeap[T] {
+func NewMinHeap[T any](
+	less func(a, b T) bool,
+) *MinHeap[T] {
 	return &MinHeap[T]{
 		data: make([]T, 0),
 		less: less,
@@ -54,17 +56,17 @@ func (h *MinHeap[T]) down(i0, n int) {
 	i := i0
 	for {
 		j1 := 2*i + 1
-		if j1 >= n || j1 < 0 {
+		j2 := 2*i + 2
+		if j2 < n && h.less(h.data[j2], h.data[i]) {
+			h.swap(i, j2)
+			i = j2
+			continue
+		} else if j1 < n && h.less(h.data[j1], h.data[i]) {
+			h.swap(i, j1)
+			i = j1
+			continue
+		} else {
 			break
 		}
-		j := j1 // left child
-		if j2 := j1 + 1; j2 < n && h.less(h.data[j2], h.data[j1]) {
-			j = j2 // right child
-		}
-		if !h.less(h.data[j], h.data[i]) {
-			break
-		}
-		h.swap(i, j)
-		i = j
 	}
 }

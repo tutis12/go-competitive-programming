@@ -14,6 +14,9 @@ func TestCorrectness(t *testing.T) {
 
 	expectedOrder := []int{1, 3, 5, 8}
 	for _, expected := range expectedOrder {
+		if expected != h.Peek() {
+			t.Errorf("Expected peek %d, but got %d", expected, h.Peek())
+		}
 		actual := h.Pop()
 		if actual != expected {
 			t.Errorf("Expected %d, but got %d", expected, actual)
