@@ -3,6 +3,7 @@ package main
 import (
 	"main/debug"
 	"main/fastio"
+	"main/hackercup"
 	"os"
 )
 
@@ -35,8 +36,7 @@ func main() {
 	defer stdout.WriteAll()
 	defer debug.ExitOnPanic()
 
-	//hackercup.Hackercup(&stdin, &stdout)
-	SolveX(&stdin, &stdout)
+	hackercup.Hackercup(&stdin, &stdout)
 }
 
 /*input
